@@ -1141,9 +1141,145 @@ function viewToday() {
   return root;
 }
 
+// ---------- Woche ----------
+
+const weekUi = { offset: 0 };
+
+const weekStartFor = (offset) => addDays(mondayOf(logicalToday()), -7 * offset);
+const weekDates = (start) => Array.from({ length: 7 }, (_, i) => addDays(start, i));
+const avg = (list) => (list.length ? list.reduce((a, b) => a + b, 0) / list.length : null);
+
+/** Nur Tage, die bewertet werden: nicht in der Zukunft, kein Pause-Tag. */
+function countedDays(dates) {
+  const today = logicalToday();
+  return dates.filter((d) => d <= today).map((d) => getDay(d)).filter((d) => d && !d.pause);
+}
+
+function metricAvg(id, dates, pick = (v) => v) {
+  return avg(countedDays(dates).map((d) => (d.metrics || {})[id]).filter((v) => v != null).map(pick).filter((v) => typeof v === 'number'));
+}
+
+function sparkline(series) {
+  const all = series.flat().filter((v) => v != null);
+  if (all.filter((v) => v != null).length < 2) return null;
+  const min = Math.min(...all), max = Math.max(...all), span = max - min || 1;
+  const path = (vals) => {
+    let d = '', pen = false;
+    vals.forEach((v, i) => {
+      if (v == null) { pen = false; return; }
+      const x = (i / (vals.length - 1)) * 100, y = 26 - ((v - min) / span) * 24;
+      d += `${pen ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)} `;
+      pen = true;
+    });
+    return d;
+  };
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 100 28');
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('aria-hidden', 'true');
+  series.forEach((vals, i) => {
+    const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    p.setAttribute('d', path(vals));
+    p.setAttribute('vector-effect', 'non-scaling-stroke');
+    if (i > 0) p.setAttribute('class', 'second');
+    svg.append(p);
+  });
+  return svg;
+}
+
+function kpi(label, value, sub, spark) {
+  return h('div', { class: 'kpi' },
+    h('div', { class: 'label' }, label),
+    h('div', { class: 'value' }, value),
+    sub ? h('div', { class: 'sub' }, sub) : null,
+    spark || null);
+}
+
+function viewWeek() {
+  const start = weekStartFor(weekUi.offset);
+  const dates = weekDates(start);
+  const today = logicalToday();
+  const days = countedDays(dates);
+  const go = (offset) => { weekUi.offset = Math.max(0, offset); render(); ensureWeekData(); };
+  // 8 Wochen für Sparklines (älteste zuerst)
+  const weeks8 = Array.from({ length: 8 }, (_, i) => weekDates(addDays(start, -7 * (7 - i))));
+
+  // 1. Wochenziele Training
+  const goals = config.training.filter(isActive).map((t) => {
+    const target = config.targets.weekly[weeklyKey(t)];
+    if (target == null) return null;
+    const entries = days.flatMap((d) => (d.training || []).filter((e) => e.id === t.id));
+    const ist = t.type === 'minutes' ? entries.reduce((s, e) => s + (e.min || 0), 0) : entries.length;
+    const pct = target > 0 ? Math.min(100, (ist / target) * 100) : 100;
+    return h('div', { class: 'goal' },
+      h('div', { class: 'goal-top' }, h('span', {}, t.name), h('span', {}, `${fmtNum(ist)} / ${fmtNum(target)}${t.type === 'minutes' ? ' min' : ''}`)),
+      h('div', { class: 'bar' }, h('i', { style: `width:${pct}%` })));
+  }).filter(Boolean);
+
+  // 2. Gewohnheiten-Raster
+  const habits = byPrio(config.habits.filter(isActive));
+  const grid = h('table', { class: 'grid' },
+    h('thead', {}, h('tr', {}, h('th', {}, ''), dates.map((d) => h('th', {}, WD_SHORT[parseYmd(d).getDay()])))),
+    h('tbody', {}, habits.map((hb) => h('tr', {},
+      h('td', {}, hb.name),
+      dates.map((d) => {
+        const day = getDay(d);
+        let cls = 'none', label = 'nicht eingetragen';
+        if (d > today) { cls = 'future'; label = ''; }
+        else if (day && day.pause) { cls = 'pause'; label = 'Pause'; }
+        else if (day && day.habits && day.habits[hb.id] === true) { cls = 'done'; label = 'erledigt'; }
+        else if (day && day.habits && day.habits[hb.id] === false) { cls = 'no'; label = 'nicht gemacht'; }
+        return h('td', { class: 'cell' }, h('i', { class: cls, title: label, 'aria-label': `${WD_SHORT[parseYmd(d).getDay()]}: ${label}` }));
+      })))));
+
+  // 3. Kennzahlen im Wochenschnitt
+  const kpis = [];
+  for (const m of config.metrics.filter(isActive)) {
+    if (m.type === 'number') {
+      const decimals = m.decimals ?? 1;
+      const cur = metricAvg(m.id, dates), prev = metricAvg(m.id, weekDates(addDays(start, -7)));
+      const diff = cur != null && prev != null ? round(cur, decimals) - round(prev, decimals) : null;
+      kpis.push(kpi(`${m.name} Ø`, cur != null ? `${fmtNum(cur, decimals)}${m.unit ? ` ${m.unit}` : ''}` : '–',
+        diff != null ? `${diff > 1e-9 ? '+' : diff < -1e-9 ? '−' : '±'}${fmtNum(Math.abs(diff), decimals)} zur Vorwoche` : null,
+        sparkline([weeks8.map((w) => metricAvg(m.id, w))])));
+    } else if (m.type === 'bloodpressure') {
+      const sys = metricAvg(m.id, dates, (v) => v.sys), dia = metricAvg(m.id, dates, (v) => v.dia);
+      const pulse = metricAvg(m.id, dates, (v) => v.pulse);
+      kpis.push(kpi(`${m.name} Ø`, sys != null ? `${fmtNum(sys)}/${fmtNum(dia)}` : '–',
+        pulse != null ? `Puls ${fmtNum(pulse)}` : null,
+        sparkline([weeks8.map((w) => metricAvg(m.id, w, (v) => v.sys)), weeks8.map((w) => metricAvg(m.id, w, (v) => v.dia))])));
+    } else if (m.type === 'scale10') {
+      const v = metricAvg(m.id, dates);
+      kpis.push(kpi(`${m.name} Ø`, v != null ? fmtNum(v, 1) : '–'));
+    }
+  }
+  const fed = days.map(nutritionOf).filter((n) => n.any);
+  kpis.push(kpi('Ernährung Ø', fed.length ? `${fmtNum(avg(fed.map((n) => n.kcal)))} kcal` : '–',
+    fed.length ? `${fmtNum(avg(fed.map((n) => n.protein)))} g Protein · ${fed.length} Tage` : null));
+
+  const pauseCount = dates.filter((d) => d <= today && (getDay(d) || {}).pause).length;
+  const end = addDays(start, 6);
+  const root = h('div', {},
+    h('div', { class: 'weekhead' },
+      h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Vorherige Woche', onclick: () => go(weekUi.offset + 1) }, '‹'),
+      h('button', { type: 'button', class: 'date-btn', onclick: () => go(0) },
+        h('strong', {}, `KW ${isoWeek(start)}`),
+        h('small', {}, `${formatDateShort(start)} – ${formatDateShort(end)}${weekUi.offset ? ' · Tippen für aktuelle Woche' : ''}`)),
+      h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Nächste Woche', disabled: weekUi.offset === 0, onclick: () => go(weekUi.offset - 1) }, '›')),
+    pauseCount ? h('p', { class: 'hint' }, `${pauseCount} Pause-Tag${pauseCount > 1 ? 'e' : ''} – nicht mitgezählt.`) : null,
+    h('h2', {}, 'Wochenziele'),
+    goals.length ? goals : h('p', { class: 'empty-note' }, 'Keine Wochenziele gesetzt.'),
+    h('h2', {}, 'Gewohnheiten'),
+    habits.length ? grid : h('p', { class: 'empty-note' }, 'Keine aktiven Gewohnheiten.'),
+    h('h2', {}, 'Wochenschnitt'),
+    h('div', { class: 'kpis' }, kpis));
+  attachSwipe(root, () => go(weekUi.offset - 1), () => go(weekUi.offset + 1));
+  return root;
+}
+
 const views = {
   today: viewToday,
-  week: () => h('div', {}, h('h1', {}, 'Woche')),
+  week: viewWeek,
   setup: viewSetup,
   sync: () => h('div', {}, h('h1', {}, 'Sync')),
 };
@@ -1187,7 +1323,13 @@ function softRender() {
 }
 
 /** Daten für die Wochenansicht (8 Wochen für Sparklines) nachladen. */
-function ensureWeekData() { return Promise.resolve(); }
+function ensureWeekData() {
+  if (!conn()) return Promise.resolve();
+  const start = weekStartFor(weekUi.offset);
+  return ensureDays(addDays(start, -7 * 8), addDays(start, 6))
+    .then((changed) => { if (changed && ui.tab === 'week') softRender(); })
+    .catch((e) => { Sync.handleError(e); updateDot(); });
+}
 
 let hiddenAt = 0;
 
