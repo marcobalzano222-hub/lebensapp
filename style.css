@@ -347,18 +347,22 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 .row-main { display: flex; gap: 6px; align-items: center; }
 .row-main input[type=text] { flex: 1; min-width: 0; }
 .row-opts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; align-items: center; }
-.row-opts select { width: auto; flex: 1 1 90px; min-height: 40px; font-size: 15px; }
+.row-opts select { width: auto; flex: 1 1 0; min-width: 0; min-height: 40px; font-size: 15px; padding: 6px 8px; }
 .row-opts input { flex: 1 1 70px; min-height: 40px; }
 .row-opts label.inline { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); flex: 1 1 70px; }
 .row-opts label.inline input { min-width: 0; }
 .toggle {
-  min-height: 40px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line);
-  background: transparent; font-size: 14px; color: var(--muted);
+  flex: none;
+  min-height: 40px; padding: 0 10px; border-radius: 10px; border: 1px solid var(--line);
+  background: transparent; font-size: 13px; color: var(--muted);
 }
 .toggle.on { color: var(--accent); border-color: var(--accent); }
 .add-row { display: flex; gap: 6px; margin-top: 8px; }
 .add-row input, .add-row select { flex: 1; min-width: 0; }
 .add-row .btn { flex: 0 0 auto; }
+.add-row.multi { flex-wrap: wrap; }
+.add-row.multi > input:first-child { flex: 1 1 100%; }
+.row-opts label.inline.wide { flex: 1 1 100%; order: 5; }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .pair .field { margin: 6px 0; }
 

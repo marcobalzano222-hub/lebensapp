@@ -606,10 +606,207 @@ function viewOnboarding() {
   );
 }
 
+// ---------- Setup ----------
+
+const SLOT_LABEL = { morning: 'Morgen', evening: 'Abend' };
+const METRIC_TYPES = { number: 'Zahl', scale10: 'Skala 1–10', bloodpressure: 'Blutdruck' };
+const TRAIN_TYPES = { session: 'Einheiten', minutes: 'Minuten' };
+
+/** Konfiguration speichern; structural = Ansicht neu zeichnen (z. B. nach Sortieren). */
+function commitConfig(what, structural = false) {
+  saveConfig(`config: update ${what}`);
+  if (structural) softRender();
+}
+
+function selectEl(options, value, onchange) {
+  return h('select', { onchange: (e) => onchange(e.target.value) },
+    Object.entries(options).map(([v, label]) => h('option', { value: v, selected: String(value) === v }, label)));
+}
+function textEl(value, onchange, attrs = {}) {
+  return h('input', { type: 'text', value: value ?? '', onchange: (e) => onchange(e.target.value), ...attrs });
+}
+function numEl(value, onchange, attrs = {}) {
+  return h('input', {
+    type: 'text', inputmode: attrs.decimal ? 'decimal' : 'numeric', value: value == null ? '' : fmtNum(value, attrs.decimal ? 1 : 0).replace(/\./g, ''),
+    placeholder: attrs.placeholder || '–', onchange: (e) => onchange(parseNum(e.target.value)),
+  });
+}
+
+/** Zeile mit Name, Sortierpfeilen und Optionen für ein Listenelement. */
+function editRow(list, i, what, opts) {
+  const item = list[i];
+  const move = (dir) => {
+    const j = i + dir;
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    commitConfig(what, true);
+  };
+  return h('div', { class: `row${isActive(item) ? '' : ' inactive'}` },
+    h('div', { class: 'row-main' },
+      textEl(item.name, (v) => { if (v.trim()) { item.name = v.trim(); commitConfig(what); } }, { 'aria-label': 'Name' }),
+      h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nach oben', disabled: i === 0, onclick: () => move(-1) }, '↑'),
+      h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nach unten', disabled: i === list.length - 1, onclick: () => move(1) }, '↓'),
+    ),
+    h('div', { class: 'row-opts' },
+      opts || [],
+      h('button', {
+        class: `toggle${isActive(item) ? ' on' : ''}`, type: 'button',
+        onclick: () => { item.active = !isActive(item); commitConfig(what, true); },
+      }, isActive(item) ? 'Aktiv' : 'Inaktiv'),
+    ),
+  );
+}
+
+const slotSelect = (item, what) => selectEl(SLOT_LABEL, item.slot, (v) => { item.slot = v; commitConfig(what); });
+const prioSelect = (item, what) => selectEl({ 1: 'Prio 1', 2: 'Prio 2' }, item.prio || 1, (v) => { item.prio = Number(v); commitConfig(what); });
+
+function addRow(fields, onAdd) {
+  const btn = h('button', { class: 'btn', type: 'button' }, 'Hinzufügen');
+  btn.addEventListener('click', () => {
+    const name = fields[0].value.trim();
+    if (!name) { fields[0].focus(); return; }
+    onAdd(name, fields.map((f) => f.value));
+    softRender();
+  });
+  return h('div', { class: `add-row${fields.length > 1 ? ' multi' : ''}` }, fields, btn);
+}
+
+function viewSetup() {
+  const c = config;
+  const firstRun = !Object.keys(meta.index || {}).length && !Object.keys(mem).some((p) => p.startsWith('days/') && mem[p]);
+
+  // Gewohnheiten
+  const habitRows = c.habits.map((it, i) => editRow(c.habits, i, 'habits', [
+    slotSelect(it, 'habits'),
+    prioSelect(it, 'habits'),
+    h('button', {
+      class: `toggle${it.refersTo === 'previousDay' ? ' on' : ''}`, type: 'button', title: 'Wird morgens eingetragen, zählt aber für den Vortag',
+      onclick: () => { if (it.refersTo) delete it.refersTo; else it.refersTo = 'previousDay'; commitConfig('habits', true); },
+    }, 'Vortag'),
+  ]));
+  const newHabit = h('input', { type: 'text', placeholder: 'Neue Gewohnheit' });
+  const newHabitSlot = selectEl(SLOT_LABEL, 'morning', () => {});
+
+  // Kennzahlen
+  const metricRows = c.metrics.map((it, i) => editRow(c.metrics, i, 'metrics', [
+    slotSelect(it, 'metrics'),
+    prioSelect(it, 'metrics'),
+    it.type === 'number'
+      ? textEl(it.unit, (v) => { it.unit = v.trim(); commitConfig('metrics'); }, { placeholder: 'Einheit', 'aria-label': 'Einheit', style: 'max-width:70px' })
+      : h('span', { class: 'small muted' }, METRIC_TYPES[it.type] || it.type),
+  ]));
+  const newMetric = h('input', { type: 'text', placeholder: 'Neue Kennzahl' });
+  const newMetricType = selectEl(METRIC_TYPES, 'number', () => {});
+  const newMetricUnit = h('input', { type: 'text', placeholder: 'Einheit', style: 'max-width:90px' });
+
+  // Training
+  const trainRows = c.training.map((it, i) => editRow(c.training, i, 'training', [
+    selectEl(TRAIN_TYPES, it.type || 'session', (v) => {
+      const oldKey = weeklyKey(it);
+      it.type = v;
+      if (oldKey in c.targets.weekly) { c.targets.weekly[weeklyKey(it)] = c.targets.weekly[oldKey]; delete c.targets.weekly[oldKey]; }
+      commitConfig('training', true);
+    }),
+    prioSelect(it, 'training'),
+    h('label', { class: 'inline wide' }, 'Minuten-Presets',
+      textEl((it.presetsMin || []).join(', '), (v) => {
+        const list = v.split(/[,;\s]+/).map(Number).filter((n) => Number.isFinite(n) && n > 0);
+        if (list.length) it.presetsMin = list; else delete it.presetsMin;
+        commitConfig('training');
+      }, { placeholder: 'z. B. 30, 45, 60', inputmode: 'numeric' })),
+  ]));
+  const newTrain = h('input', { type: 'text', placeholder: 'Neue Trainingsart' });
+  const newTrainType = selectEl(TRAIN_TYPES, 'session', () => {});
+
+  // Mahlzeiten
+  const macro = (it, key, label) => h('label', { class: 'inline' }, label,
+    numEl(it[key], (v) => { it[key] = v ?? 0; commitConfig('meals'); }));
+  const mealRows = c.meals.map((it, i) => editRow(c.meals, i, 'meals', [
+    macro(it, 'kcal', 'kcal'), macro(it, 'protein', 'P'), macro(it, 'carbs', 'KH'),
+  ]));
+  const newMeal = h('input', { type: 'text', placeholder: 'Neue Mahlzeit' });
+
+  // Ziele
+  const dailyField = (key, label) => h('label', { class: 'field' }, h('span', {}, label),
+    numEl(c.targets.daily[key], (v) => { c.targets.daily[key] = v; commitConfig('targets'); }, { placeholder: 'kein Ziel' }));
+  const weeklyFields = c.training.filter(isActive).map((t) => h('label', { class: 'field' },
+    h('span', {}, `${t.name} (${t.type === 'minutes' ? 'Minuten' : 'Einheiten'} / Woche)`),
+    numEl(c.targets.weekly[weeklyKey(t)], (v) => {
+      if (v == null) delete c.targets.weekly[weeklyKey(t)]; else c.targets.weekly[weeklyKey(t)] = v;
+      commitConfig('targets');
+    }, { placeholder: 'kein Ziel' })));
+
+  // Tagesablauf
+  const timeField = (w, k, label) => h('label', { class: 'field' }, h('span', {}, label),
+    h('input', { type: 'time', value: c.windows[w][k], onchange: (e) => { if (e.target.value) { c.windows[w][k] = e.target.value; commitConfig('windows'); } } }));
+
+  // Pause-Modi
+  const pauseRows = c.pauseModes.map((p) => h('div', { class: 'row' },
+    textEl(p.name, (v) => { if (v.trim()) { p.name = v.trim(); commitConfig('pauseModes'); } }, { 'aria-label': 'Name des Pause-Modus' })));
+  const newPause = h('input', { type: 'text', placeholder: 'Neuer Pause-Modus' });
+
+  return h('div', {},
+    h('h1', {}, 'Setup'),
+    firstRun ? h('p', { class: 'muted' }, 'Die Standardkonfiguration ist angelegt. Passe sie an; jede Änderung wird automatisch gespeichert.') : null,
+
+    h('label', { class: 'field' }, h('span', {}, 'Name'),
+      textEl(c.user.name, (v) => { c.user.name = v.trim(); commitConfig('user'); })),
+
+    h('h2', {}, 'Gewohnheiten'),
+    h('div', { class: 'rows' }, habitRows),
+    addRow([newHabit, newHabitSlot], (name, [, slot]) => {
+      c.habits.push({ id: slugId(name, c.habits), name, type: 'bool', slot, prio: 2, active: true });
+      commitConfig('habits');
+    }),
+
+    h('h2', {}, 'Kennzahlen'),
+    h('div', { class: 'rows' }, metricRows),
+    addRow([newMetric, newMetricType, newMetricUnit], (name, [, type, unit]) => {
+      const m = { id: slugId(name, c.metrics), name, type, slot: 'morning', prio: 2, active: true };
+      if (type === 'number') { m.unit = unit.trim(); m.decimals = 1; m.source = 'manual'; }
+      c.metrics.push(m);
+      commitConfig('metrics');
+    }),
+
+    h('h2', {}, 'Training'),
+    h('div', { class: 'rows' }, trainRows),
+    addRow([newTrain, newTrainType], (name, [, type]) => {
+      c.training.push({ id: slugId(name, c.training), name, type, presetsMin: [30, 45, 60], prio: 2, active: true });
+      commitConfig('training');
+    }),
+
+    h('h2', {}, 'Ziele'),
+    h('p', { class: 'hint' }, 'Tagesziele Ernährung'),
+    h('div', { class: 'pair' }, dailyField('kcal', 'kcal'), dailyField('protein', 'Protein (g)'), dailyField('carbs', 'Carbs (g)')),
+    h('p', { class: 'hint' }, 'Wochenziele Training'),
+    h('div', { class: 'pair' }, weeklyFields),
+
+    h('h2', {}, 'Mahlzeiten'),
+    h('div', { class: 'rows' }, mealRows.length ? mealRows : h('p', { class: 'empty-note' }, 'Noch keine Mahlzeiten.')),
+    addRow([newMeal], (name) => {
+      c.meals.push({ id: slugId(name, c.meals), name, kcal: 0, protein: 0, carbs: 0, active: true });
+      commitConfig('meals');
+    }),
+
+    h('h2', {}, 'Tagesablauf'),
+    h('div', { class: 'pair' },
+      timeField('morning', 'start', 'Morgen ab'), timeField('morning', 'end', 'Morgen bis'),
+      timeField('evening', 'start', 'Abend ab'), timeField('evening', 'end', 'Abend bis')),
+    h('p', { class: 'hint' }, 'Einträge vor dem Ende des Abendfensters (z. B. 00:30) zählen zum Vortag.'),
+
+    h('h2', {}, 'Pause-Modi'),
+    h('div', { class: 'rows' }, pauseRows),
+    addRow([newPause], (name) => {
+      c.pauseModes.push({ id: slugId(name, c.pauseModes), name });
+      commitConfig('pauseModes');
+    }),
+  );
+}
+
 const views = {
   today: () => h('div', {}, h('h1', {}, 'Heute')),
   week: () => h('div', {}, h('h1', {}, 'Woche')),
-  setup: () => h('div', {}, h('h1', {}, 'Setup')),
+  setup: viewSetup,
   sync: () => h('div', {}, h('h1', {}, 'Sync')),
 };
 
