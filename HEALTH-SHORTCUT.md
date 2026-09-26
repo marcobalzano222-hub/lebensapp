@@ -1,4 +1,4 @@
-# Kurzbefehl „Lebensapp Health“
+# Kurzbefehl „Lebensapp-Health“
 
 Der Kurzbefehl liest die Daten des **Vortags** aus Apple Health und legt sie als `health/JJJJ-MM-TT.json` in deinem privaten Daten-Repo ab. Die App liest die Datei beim nächsten Öffnen.
 
@@ -24,7 +24,7 @@ Workouts sind (noch) nicht dabei: Der eingebaute Kurzbefehl kann den Workout-Typ
 
 ## 2. Einmal testen
 
-1. In der Kurzbefehle-App auf **Lebensapp Health** tippen.
+1. In der Kurzbefehle-App auf **Lebensapp-Health** (mit Herz-Symbol) tippen.
 2. iOS fragt nach Zugriff auf Health → **alle Kategorien erlauben**.
    Bei der Frage, ob Daten an `api.github.com` gesendet werden dürfen → **Immer erlauben**.
 3. Lebensapp öffnen → **Setup → Apple Health**: Dort steht jetzt „Letzte Health-Daten: …“ mit dem gestrigen Datum.
@@ -35,7 +35,7 @@ Danach unter **Setup → Apple Health** auf **„Kurzbefehl ist installiert“**
 
 1. Kurzbefehle → **Automation** → **+**.
 2. **Tageszeit** → `09:00` · *Täglich* → **Sofort ausführen**, *Bei Ausführung benachrichtigen* aus.
-3. **Weiter** → **Lebensapp Health** auswählen.
+3. **Weiter** → **Lebensapp-Health** auswählen.
 
 > iOS gibt Health-Daten nur heraus, wenn das iPhone entsperrt ist. Läuft die Automation bei gesperrtem Handy, kommen keine Daten an. Dafür gibt es den Knopf im Morgen-Check-in.
 

@@ -957,7 +957,7 @@ function viewSetup() {
 
     h('h2', {}, 'Apple Health'),
     h('p', { class: 'hint' },
-      'Schritte, Schlaf und Gewicht kommen vom iOS-Kurzbefehl „Lebensapp Health“. ',
+      'Schritte, Schlaf und Gewicht kommen vom iOS-Kurzbefehl „Lebensapp-Health“. ',
       h('a', { href: 'shortcuts/Lebensapp-Health.shortcut' }, 'Kurzbefehl laden'), ' · ',
       h('a', { href: shortcutGuideUrl(), target: '_blank', rel: 'noopener' }, 'Anleitung'), '.'),
     h('div', { class: 'btn-row' }, h('button', {
@@ -1253,7 +1253,7 @@ function healthButton(date, today, slot) {
   if (!config.health.shortcut || date !== today || slot !== 'morning') return null;
   if (Store.get(healthPath(addDays(today, -1)))) return null;
   return h('div', { class: 'block' }, h('a', {
-    class: 'btn block health-btn', href: `shortcuts://run-shortcut?name=${encodeURIComponent('Lebensapp Health')}`,
+    class: 'btn block health-btn', href: `shortcuts://run-shortcut?name=${encodeURIComponent('Lebensapp-Health')}`,
   }, '♥ Apple-Health-Daten von gestern holen'));
 }
 
