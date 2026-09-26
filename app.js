@@ -803,8 +803,346 @@ function viewSetup() {
   );
 }
 
+// ---------- Heute ----------
+
+const todayUi = { date: null, slot: null, pauseOpen: false, trainOpen: null, ensured: null };
+
+const byPrio = (list) => list.map((x, i) => [x, i]).sort((a, b) => (a[0].prio || 1) - (b[0].prio || 1) || a[1] - b[1]).map((x) => x[0]);
+const habitDate = (hb, date) => (hb.refersTo === 'previousDay' ? addDays(date, -1) : date);
+const habitValue = (hb, date) => ((getDay(habitDate(hb, date)) || {}).habits || {})[hb.id];
+const metricValue = (m, date) => ((getDay(date) || {}).metrics || {})[m.id];
+const showMetric = (m) => isActive(m) && !(m.type === 'number' && m.source === 'health');
+
+/** Letzter erfasster Wert einer Kennzahl vor (oder an) einem Datum – für die Vorbelegung. */
+function lastMetricValue(id, date, maxDays = 90) {
+  for (let i = 0; i <= maxDays; i++) {
+    const v = ((getDay(addDays(date, -i)) || {}).metrics || {})[id];
+    if (v != null) return v;
+  }
+  return null;
+}
+
+function slotItems(slot) {
+  return {
+    habits: byPrio(config.habits.filter((x) => isActive(x) && x.slot === slot)),
+    metrics: byPrio(config.metrics.filter((x) => showMetric(x) && x.slot === slot)),
+  };
+}
+
+function progressOf(date, slot) {
+  const { habits, metrics } = slotItems(slot);
+  const total = habits.length + metrics.length;
+  if (!total) return 0;
+  const done = habits.filter((x) => habitValue(x, date) !== undefined).length
+    + metrics.filter((x) => metricValue(x, date) != null).length;
+  return done / total;
+}
+function updateProgress(date, slot) {
+  const bar = $('#progress > i');
+  if (bar) bar.style.width = `${Math.round(progressOf(date, slot) * 100)}%`;
+}
+
+function setHabit(hb, date, value) {
+  updateDay(habitDate(hb, date), (d) => {
+    if (value === undefined) delete d.habits[hb.id]; else d.habits[hb.id] = value;
+  });
+}
+function setMetric(m, date, value) {
+  updateDay(date, (d) => { if (value == null) delete d.metrics[m.id]; else d.metrics[m.id] = value; });
+}
+
+/** Tap und langer Druck auf demselben Element. */
+function pressable(el, onTap, onLong) {
+  let timer = null, long = false, sx = 0, sy = 0;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  el.addEventListener('pointerdown', (e) => {
+    long = false; sx = e.clientX; sy = e.clientY;
+    timer = setTimeout(() => { timer = null; long = true; haptic(); onLong(); }, 500);
+  });
+  el.addEventListener('pointermove', (e) => { if (timer && Math.hypot(e.clientX - sx, e.clientY - sy) > 10) cancel(); });
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) el.addEventListener(ev, cancel);
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
+  el.addEventListener('click', () => { if (long) { long = false; return; } haptic(); onTap(); });
+}
+
+function boolTile(hb, date, slot, compact) {
+  const el = h('button', { type: 'button', class: 'tile', title: hb.note || null },
+    hb.name, !compact && hb.note ? h('small', {}, hb.note) : null);
+  const paint = () => {
+    const v = habitValue(hb, date);
+    el.classList.toggle('on', v === true);
+    el.classList.toggle('no', v === false);
+    el.setAttribute('aria-pressed', v === true ? 'true' : 'false');
+  };
+  const set = (v) => { setHabit(hb, date, v); paint(); updateProgress(date, slot); };
+  // Tap: erledigt ↔ nicht eingetragen. Langer Druck: explizit „nicht gemacht“.
+  pressable(el,
+    () => set(habitValue(hb, date) === true ? undefined : true),
+    () => set(habitValue(hb, date) === false ? undefined : false));
+  paint();
+  return el;
+}
+
+function scaleRow(m, date) {
+  const v = metricValue(m, date);
+  return h('div', { class: 'block' },
+    h('p', { class: 'block-title' }, h('span', {}, m.name)),
+    h('div', { class: 'scale', role: 'group', 'aria-label': m.name },
+      Array.from({ length: 10 }, (_, i) => i + 1).map((n) => h('button', {
+        type: 'button', class: v === n ? 'on' : '', 'aria-pressed': v === n ? 'true' : 'false',
+        onclick: () => { haptic(); setMetric(m, date, v === n ? null : n); softRender(); },
+      }, n))));
+}
+
+/** Zahlenfeld mit −/+ Stepper. */
+function stepper({ value, decimals = 0, step = 1, label, onSet, inputmode = 'numeric' }) {
+  const input = h('input', {
+    type: 'text', inputmode, value: value == null ? '' : fmtNum(value, decimals).replace(/\./g, ''),
+    'aria-label': label, enterkeyhint: 'done',
+    onfocus: (e) => e.target.select(),
+    onchange: (e) => { const n = parseNum(e.target.value); if (n != null && n > 0) onSet(round(n, decimals), false); else e.target.value = value == null ? '' : fmtNum(value, decimals); },
+    onkeydown: (e) => { if (e.key === 'Enter') e.target.blur(); },
+  });
+  const bump = (dir) => { haptic(); onSet(round((value ?? 0) + dir * step, decimals), true); };
+  return h('div', {},
+    h('div', { class: 'stepper' },
+      h('button', { type: 'button', 'aria-label': `${label} verringern`, onclick: () => bump(-1) }, '−'),
+      input,
+      h('button', { type: 'button', 'aria-label': `${label} erhöhen`, onclick: () => bump(1) }, '+')),
+    label ? h('div', { class: 'stepper-label' }, label) : null);
+}
+
+function bpCard(m, date, slot) {
+  const v = metricValue(m, date);
+  const last = lastMetricValue(m.id, addDays(date, -1));
+  const shown = v || last || { sys: 120, dia: 80 };
+  const prefill = !v;
+  const save = (patch, rerender) => {
+    const next = { sys: shown.sys, dia: shown.dia, ...(v && v.pulse ? { pulse: v.pulse } : {}), ...patch };
+    if (next.pulse == null) delete next.pulse;
+    setMetric(m, date, next);
+    if (rerender) softRender(); else { card.classList.remove('prefill'); updateProgress(date, slot); }
+  };
+  const pulse = h('input', {
+    type: 'text', inputmode: 'numeric', value: v && v.pulse ? v.pulse : '', placeholder: '–',
+    'aria-label': 'Puls', enterkeyhint: 'done',
+    onchange: (e) => { const n = parseNum(e.target.value); save({ pulse: n && n > 0 ? Math.round(n) : null }, false); },
+    onkeydown: (e) => { if (e.key === 'Enter') e.target.blur(); },
+  });
+  const card = h('div', { class: `metric-card${prefill ? ' prefill' : ''}` },
+    h('div', { class: 'metric-head' },
+      h('span', {}, m.name, prefill && last ? ' · letzter Wert' : ''),
+      prefill
+        ? h('button', { type: 'button', onclick: () => { haptic(); save({}, true); } }, 'Übernehmen')
+        : h('button', { type: 'button', class: 'muted', onclick: () => { setMetric(m, date, null); softRender(); } }, 'Löschen')),
+    h('div', { class: 'steppers' },
+      stepper({ value: shown.sys, label: 'Systolisch', onSet: (n, re) => save({ sys: n }, re) }),
+      stepper({ value: shown.dia, label: 'Diastolisch', onSet: (n, re) => save({ dia: n }, re) })),
+    h('div', { class: 'pulse-row' }, h('label', {}, 'Puls (optional)'), pulse));
+  return card;
+}
+
+function numberCard(m, date, slot) {
+  const decimals = m.decimals ?? 1;
+  const v = metricValue(m, date);
+  const last = lastMetricValue(m.id, addDays(date, -1));
+  const shown = v ?? last;
+  const prefill = v == null;
+  const save = (n, rerender) => {
+    setMetric(m, date, n);
+    if (rerender) softRender(); else { card.classList.remove('prefill'); updateProgress(date, slot); }
+  };
+  const card = h('div', { class: `metric-card${prefill ? ' prefill' : ''}` },
+    h('div', { class: 'metric-head' },
+      h('span', {}, m.name, m.unit ? ` (${m.unit})` : '', prefill && last != null ? ' · letzter Wert' : ''),
+      prefill
+        ? (shown != null ? h('button', { type: 'button', onclick: () => { haptic(); save(shown, true); } }, 'Übernehmen') : null)
+        : h('button', { type: 'button', class: 'muted', onclick: () => save(null, true) }, 'Löschen')),
+    stepper({ value: shown, decimals, step: 10 ** -decimals, label: '', inputmode: decimals ? 'decimal' : 'numeric', onSet: save }));
+  return card;
+}
+
+function trainingBlock(date, day) {
+  const types = config.training.filter(isActive);
+  if (!types.length) return null;
+  const entries = day.training || [];
+  const add = (entry) => {
+    haptic();
+    updateDay(date, (d) => { d.training = [...(d.training || []), entry]; });
+    todayUi.trainOpen = null;
+    softRender();
+  };
+  const summary = (t) => {
+    const mine = entries.filter((e) => e.id === t.id);
+    if (!mine.length) return null;
+    const min = mine.reduce((s, e) => s + (e.min || 0), 0);
+    return min ? `${min} min` : `${mine.length}×`;
+  };
+  const open = types.find((t) => t.id === todayUi.trainOpen);
+  return h('div', { class: 'block' },
+    h('p', { class: 'block-title' }, h('span', {}, 'Training')),
+    h('div', { class: 'train-tiles' }, types.map((t) => h('button', {
+      type: 'button', class: `tile${summary(t) ? ' on' : ''}${open === t ? ' open' : ''}`,
+      onclick: () => {
+        if (t.presetsMin && t.presetsMin.length) { todayUi.trainOpen = open === t ? null : t.id; softRender(); } else add({ id: t.id });
+      },
+    }, t.name, h('small', {}, summary(t) || ' ')))),
+    open ? h('div', { class: 'presets' },
+      open.presetsMin.map((min) => h('button', { type: 'button', class: 'btn', onclick: () => add({ id: open.id, min }) }, `${min} min`)),
+      open.type !== 'minutes' ? h('button', { type: 'button', class: 'btn', onclick: () => add({ id: open.id }) }, 'ohne Zeit') : null) : null,
+    entries.length ? h('div', { class: 'chips' }, entries.map((e, i) => {
+      const t = config.training.find((x) => x.id === e.id);
+      return h('span', { class: 'chip' },
+        h('span', {}, `${t ? t.name : e.id}${e.min ? ` ${e.min} min` : ''}`),
+        h('button', {
+          type: 'button', 'aria-label': 'Entfernen',
+          onclick: () => { updateDay(date, (d) => { d.training = d.training.filter((_, j) => j !== i); }); softRender(); },
+        }, '×'));
+    })) : null);
+}
+
+/** Summen aus dem Snapshot (Makros zum Zeitpunkt der Eingabe). */
+function nutritionOf(day) {
+  const sum = { kcal: 0, protein: 0, carbs: 0, any: false };
+  const snap = day.mealsSnapshot || [];
+  for (const e of day.meals || []) {
+    const src = snap.find((s) => s.id === e.id) || config.meals.find((m) => m.id === e.id) || {};
+    for (const k of ['kcal', 'protein', 'carbs']) sum[k] += (src[k] || 0) * (e.count || 0);
+    if (e.count) sum.any = true;
+  }
+  return sum;
+}
+
+function changeMeal(date, meal, delta) {
+  haptic();
+  updateDay(date, (d) => {
+    const meals = (d.meals || []).map((e) => ({ ...e }));
+    const e = meals.find((x) => x.id === meal.id);
+    if (e) e.count = Math.max(0, e.count + delta); else if (delta > 0) meals.push({ id: meal.id, count: delta });
+    d.meals = meals.filter((x) => x.count > 0);
+    // Snapshot: bestehende Werte behalten, neue Mahlzeiten mit den aktuellen Makros.
+    const old = d.mealsSnapshot || [];
+    d.mealsSnapshot = d.meals.map((x) => {
+      const prev = old.find((s) => s.id === x.id);
+      const src = prev || config.meals.find((m) => m.id === x.id) || {};
+      return { id: x.id, count: x.count, kcal: src.kcal || 0, protein: src.protein || 0, carbs: src.carbs || 0 };
+    });
+    if (!d.meals.length) delete d.mealsSnapshot;
+  });
+  softRender();
+}
+
+function mealsBlock(date, day) {
+  const meals = config.meals.filter(isActive);
+  const counts = Object.fromEntries((day.meals || []).map((e) => [e.id, e.count]));
+  const sum = nutritionOf(day);
+  const t = config.targets.daily;
+  const part = (label, key, unit = '') => h('span', {},
+    `${label} `, h('b', {}, fmtNum(sum[key]), unit),
+    t[key] != null ? h('span', { class: 'of' }, ` / ${fmtNum(t[key])}${unit}`) : null);
+  return h('div', { class: 'block' },
+    h('p', { class: 'block-title' }, h('span', {}, 'Mahlzeiten')),
+    meals.length ? h('div', { class: 'meals' }, meals.map((m) => h('div', { class: `meal${counts[m.id] ? ' on' : ''}` },
+      h('button', { type: 'button', class: 'meal-add', onclick: () => changeMeal(date, m, 1) },
+        m.name, h('small', {}, `${fmtNum(m.kcal)} kcal · ${fmtNum(m.protein)} g P · ${fmtNum(m.carbs)} g KH`)),
+      counts[m.id] ? h('span', { class: 'count' }, counts[m.id]) : null,
+      counts[m.id] ? h('button', { type: 'button', class: 'icon-btn', 'aria-label': `${m.name} verringern`, onclick: () => changeMeal(date, m, -1) }, '−') : null,
+    ))) : h('p', { class: 'empty-note' }, 'Lege deine Mahlzeiten im Setup an.'),
+    h('div', { class: 'sumline' }, part('', 'kcal', ' kcal'), part('P', 'protein', ' g'), part('KH', 'carbs', ' g')));
+}
+
+function metricBlock(m, date, slot) {
+  if (m.type === 'bloodpressure') return h('div', { class: 'block' }, bpCard(m, date, slot));
+  if (m.type === 'number') return h('div', { class: 'block' }, numberCard(m, date, slot));
+  if (m.type === 'scale10') return scaleRow(m, date);
+  return null;
+}
+
+function attachSwipe(el, onLeft, onRight) {
+  let sx = null, sy = 0;
+  el.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1 || e.target.closest('input, select')) { sx = null; return; }
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+  }, { passive: true });
+  el.addEventListener('touchend', (e) => {
+    if (sx == null) return;
+    const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+    sx = null;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) (dx < 0 ? onLeft : onRight)();
+  }, { passive: true });
+}
+
+function viewToday() {
+  const today = logicalToday();
+  if (todayUi.date && todayUi.date >= today) todayUi.date = null;
+  const date = todayUi.date || today;
+  const slot = todayUi.slot || currentSlot();
+  const day = Object.assign(emptyDay(date), getDay(date) || {});
+  const paused = day.pause ? config.pauseModes.find((p) => p.id === day.pause) || { id: day.pause, name: day.pause } : null;
+
+  // Vergangene Tage bei Bedarf nachladen.
+  if (date !== today && todayUi.ensured !== date && conn()) {
+    todayUi.ensured = date;
+    ensureDays(addDays(date, -1), date).then((changed) => { if (changed) softRender(); }).catch(() => {});
+  }
+
+  const go = (d) => { todayUi.date = d >= today ? null : d; todayUi.trainOpen = null; todayUi.pauseOpen = false; render(); };
+  const yesterday = addDays(today, -1);
+  const sub = date === today ? 'Heute' : `${date === yesterday ? 'Gestern' : `vor ${Math.round((parseYmd(today) - parseYmd(date)) / 86400000)} Tagen`} · Tippen für heute`;
+
+  const { habits, metrics } = slotItems(slot);
+  const p1Metrics = metrics.filter((m) => (m.prio || 1) === 1);
+  const p2Metrics = metrics.filter((m) => (m.prio || 1) !== 1);
+  const p1Habits = habits.filter((x) => (x.prio || 1) === 1);
+  const p2Habits = habits.filter((x) => (x.prio || 1) !== 1);
+  const bigFirst = (list) => list.filter((m) => m.type !== 'scale10');
+  const scales = (list) => list.filter((m) => m.type === 'scale10');
+
+  const root = h('div', {},
+    h('div', { class: 'dayhead' },
+      h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Vortag', onclick: () => go(addDays(date, -1)) }, '‹'),
+      h('button', { type: 'button', class: 'date-btn', onclick: () => go(today) },
+        h('strong', {}, formatDateLong(date)),
+        h('small', { class: date === today ? '' : 'past' }, sub)),
+      h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Nächster Tag', disabled: date === today, onclick: () => go(addDays(date, 1)) }, '›')),
+
+    h('div', { class: 'controls' },
+      h('div', { class: 'segmented', role: 'group', 'aria-label': 'Check-in' },
+        ['morning', 'evening'].map((s) => h('button', {
+          type: 'button', class: slot === s ? 'on' : '', 'aria-pressed': slot === s ? 'true' : 'false',
+          onclick: () => { todayUi.slot = s === currentSlot() ? null : s; todayUi.trainOpen = null; render(); },
+        }, SLOT_LABEL[s]))),
+      config.pauseModes.length ? h('button', {
+        type: 'button', class: `pause-btn${paused ? ' on' : ''}`,
+        onclick: () => { todayUi.pauseOpen = !todayUi.pauseOpen; render(); },
+      }, paused ? `Pause: ${paused.name}` : 'Pause') : null),
+
+    todayUi.pauseOpen ? h('div', { class: 'pause-menu' },
+      config.pauseModes.map((p) => h('button', {
+        type: 'button', class: `btn${day.pause === p.id ? ' primary' : ''}`,
+        onclick: () => { updateDay(date, (d) => { d.pause = d.pause === p.id ? null : p.id; }); todayUi.pauseOpen = false; render(); },
+      }, p.name)),
+      paused ? h('button', { type: 'button', class: 'btn', onclick: () => { updateDay(date, (d) => { d.pause = null; }); todayUi.pauseOpen = false; render(); } }, 'Keine Pause') : null) : null,
+
+    h('div', { class: 'progress', id: 'progress', role: 'presentation' }, h('i', { style: `width:${Math.round(progressOf(date, slot) * 100)}%` })),
+
+    h('div', { class: `checkin${paused ? ' paused' : ''}` },
+      paused ? h('p', { class: 'paused-note' }, 'Pause-Tag: zählt nicht in Durchschnitte und Wochenziele. Eingaben sind trotzdem möglich.') : null,
+      bigFirst(p1Metrics).map((m) => metricBlock(m, date, slot)),
+      slot === 'evening' ? [mealsBlock(date, day), trainingBlock(date, day)] : null,
+      p1Habits.length ? h('div', { class: 'block' }, h('div', { class: 'tiles' }, p1Habits.map((x) => boolTile(x, date, slot, false)))) : null,
+      scales(p1Metrics).map((m) => metricBlock(m, date, slot)),
+      p2Habits.length ? h('div', { class: 'block' }, h('div', { class: 'tiles compact' }, p2Habits.map((x) => boolTile(x, date, slot, true)))) : null,
+      p2Metrics.map((m) => metricBlock(m, date, slot)),
+      !habits.length && !metrics.length && slot === 'morning' ? h('p', { class: 'empty-note' }, 'Für den Morgen ist nichts eingerichtet.') : null,
+    ));
+
+  attachSwipe(root, () => { if (date < today) go(addDays(date, 1)); }, () => go(addDays(date, -1)));
+  return root;
+}
+
 const views = {
-  today: () => h('div', {}, h('h1', {}, 'Heute')),
+  today: viewToday,
   week: () => h('div', {}, h('h1', {}, 'Woche')),
   setup: viewSetup,
   sync: () => h('div', {}, h('h1', {}, 'Sync')),
@@ -877,7 +1215,12 @@ function init() {
   window.addEventListener('online', () => { Sync.offline = false; Sync.flush(); });
   window.addEventListener('offline', () => { Sync.offline = true; updateDot(); });
   // Morgen/Abend-Wechsel und Tageswechsel auch bei offener App.
-  setInterval(() => onResume(false), 60 * 1000);
+  let clockKey = config ? logicalToday() + currentSlot() : '';
+  setInterval(() => {
+    if (!config) return;
+    const k = logicalToday() + currentSlot();
+    if (k !== clockKey) { clockKey = k; if (ui.tab === 'today') softRender(); }
+  }, 60 * 1000);
 
   // Lokal (Entwicklung) ohne Service Worker, damit Änderungen sofort sichtbar sind; mit ?sw=1 erzwingen.
   const dev = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && !/[?&]sw=1/.test(location.search);
@@ -887,6 +1230,9 @@ function init() {
 }
 
 /** Nach Rückkehr in die App: automatischen Check-in und „Heute“ neu bestimmen. */
-function onResume() { softRender(); }
+function onResume(reset) {
+  if (reset) Object.assign(todayUi, { date: null, slot: null, pauseOpen: false, trainOpen: null });
+  softRender();
+}
 
 init();
