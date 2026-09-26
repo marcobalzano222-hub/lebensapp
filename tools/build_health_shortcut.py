@@ -149,14 +149,20 @@ sleep_end = adjust(day, 'Schlaf bis', 'Add', 12, 'hr')
 
 comment('Schritte: Summe des Vortags')
 steps_found = find_health('Steps', (day, 'Tag'), (day_end, 'Tagesende'), 'Schritt-Samples')
+step_values = act('properties.health.quantity', CustomOutputName='Schritt-Werte', WFContentItemPropertyName='Value',
+                  WFInput=attach(out(steps_found, 'Schritt-Samples')))
 steps = act('statistics', CustomOutputName='Schritte', WFStatisticsOperation='Sum',
-            WFInput=attach(out(steps_found, 'Schritt-Samples')))
+            WFInput=attach(out(step_values, 'Schritt-Werte')))
+step_count = act('count', CustomOutputName='Anzahl Schritt-Samples', WFCountType='Items',
+                 WFInput=attach(out(steps_found, 'Schritt-Samples')))
 
 comment('Gewicht: letzte Messung am Vortag')
 weight = find_health('Weight', (day, 'Tag'), (day_end, 'Tagesende'), 'Gewicht', latest_one=True)
 
 comment('Schlaf: alle Schlaf-Phasen der Nacht, die am Morgen des Vortags endet (die App rechnet die Dauer aus)')
 sleep_found = find_health('Sleep', (sleep_start, 'Schlaf ab'), (sleep_end, 'Schlaf bis'), 'Schlaf-Samples')
+sleep_count = act('count', CustomOutputName='Anzahl Schlaf-Samples', WFCountType='Items',
+                  WFInput=attach(out(sleep_found, 'Schlaf-Samples')))
 sleep = lines_of(sleep_found, 'Schlaf-Samples', [
     var('Repeat Item', prop('Value')),
     var('Repeat Item', prop('Start Date'), datefmt(ISO)),
@@ -171,6 +177,11 @@ data = act('dictionary', CustomOutputName='Health-Daten', WFItems=fields([
     ('steps', [out(steps, 'Schritte')]),
     ('weight', [out(weight, 'Gewicht', prop('Value'))]),
     ('sleep', [out(sleep, 'Schlaf')]),
+    # Diagnose: Zeitfenster und Anzahl gefundener Messungen (die App ignoriert das Feld)
+    ('debug', ['tag=', out(day, 'Tag', datefmt(ISO)), ' ende=', out(day_end, 'Tagesende', datefmt(ISO)),
+               ' schlafAb=', out(sleep_start, 'Schlaf ab', datefmt(ISO)), ' schlafBis=', out(sleep_end, 'Schlaf bis', datefmt(ISO)),
+               ' schrittSamples=', out(step_count, 'Anzahl Schritt-Samples'),
+               ' schlafSamples=', out(sleep_count, 'Anzahl Schlaf-Samples'), ' gewicht=', out(weight, 'Gewicht')]),
 ]))
 content = act('base64encode', CustomOutputName='Inhalt', WFEncodeMode='Encode', WFBase64LineBreakMode='None',
               WFInput=attach(out(data, 'Health-Daten')))
