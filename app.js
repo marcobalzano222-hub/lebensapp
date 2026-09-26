@@ -123,7 +123,10 @@ const DEFAULT_CONFIG = {
   habits: [
     { id: 'meditation_am', name: 'Meditation morgens', type: 'bool', slot: 'morning', prio: 1, active: true },
     { id: 'light_am', name: 'Licht nach dem Aufstehen', type: 'bool', slot: 'morning', prio: 2, active: true },
-    { id: 'supplements', name: 'Supplements', type: 'bool', slot: 'morning', prio: 2, active: true, note: 'Omega 3, Vitamin D3, Magnesium, Creatin' },
+    { id: 'omega3', name: 'Omega 3', type: 'bool', slot: 'morning', prio: 2, active: true, group: 'Supplements' },
+    { id: 'vitamin_d3', name: 'Vitamin D3', type: 'bool', slot: 'morning', prio: 2, active: true, group: 'Supplements' },
+    { id: 'creatine', name: 'Kreatin', type: 'bool', slot: 'morning', prio: 2, active: true, group: 'Supplements' },
+    { id: 'magnesium', name: 'Magnesium', type: 'bool', slot: 'evening', prio: 2, active: true, group: 'Supplements' },
     { id: 'no_phone_night', name: 'Kein Handy vorm Schlafen (gestern)', type: 'bool', slot: 'morning', prio: 2, active: true, refersTo: 'previousDay' },
     { id: 'meditation_pm', name: 'Meditation abends', type: 'bool', slot: 'evening', prio: 1, active: true },
     { id: 'reading', name: 'Lesen', type: 'bool', slot: 'evening', prio: 2, active: true },
@@ -161,6 +164,27 @@ function normalizeConfig(c) {
   cfg.health = Object.assign({ workoutMap: {} }, cfg.health);
   if (!cfg.health.workoutMap || typeof cfg.health.workoutMap !== 'object') cfg.health.workoutMap = {};
   return cfg;
+}
+
+/**
+ * Einmalige Umstellungen bestehender Konfigurationen. Liefert true, wenn sich etwas geändert hat.
+ * - split_supplements: „Supplements“ (ein Tap für alles) → vier einzelne Gewohnheiten.
+ */
+function migrateConfig(cfg) {
+  cfg.migrations = cfg.migrations || [];
+  let changed = false;
+  if (!cfg.migrations.includes('split_supplements')) {
+    const old = cfg.habits.find((x) => x.id === 'supplements');
+    if (old && isActive(old) && !cfg.habits.some((x) => x.group === 'Supplements')) {
+      old.active = false;
+      const at = cfg.habits.indexOf(old) + 1;
+      const add = DEFAULT_CONFIG.habits.filter((x) => x.group === 'Supplements').map((x) => ({ ...x, slot: old.slot === 'evening' ? 'evening' : x.slot }));
+      cfg.habits.splice(at, 0, ...add.filter((x) => !cfg.habits.some((y) => y.id === x.id)));
+    }
+    cfg.migrations.push('split_supplements');
+    changed = true;
+  }
+  return changed;
 }
 
 /** Wochenziel-Schlüssel einer Trainingsart: Minuten bei type=minutes, sonst Einheiten. */
@@ -231,6 +255,7 @@ function loadConfigFromCache() {
   const f = Store.get('config.json');
   config = f ? normalizeConfig(f.data) : null;
   healthCache.clear();
+  if (config && migrateConfig(config)) saveConfig('config: migrate');
 }
 function saveConfig(message = 'config: update') {
   meta.commitMsg = Object.assign(meta.commitMsg || {}, { 'config.json': message });
@@ -1096,9 +1121,12 @@ function updateProgress(date) {
   for (const [id, c] of Object.entries(counts)) {
     const el = document.querySelector(`[data-count="${id}"]`);
     if (el) el.textContent = countLabel(c);
+    const g = document.querySelector(`[data-group="${id}"]`);
+    if (g) g.classList.toggle('done', isDone(c));
   }
 }
-const countLabel = (c) => (c.total && c.done >= c.total ? '✓' : `${c.done}/${c.total}`);
+const isDone = (c) => c.total > 0 && c.done >= c.total;
+const countLabel = (c) => (isDone(c) ? '✓ erledigt' : `${c.done}/${c.total}`);
 
 // Eingeklappte Abschnitte merken (nur auf diesem Gerät)
 const collapsed = new Set(LS.get('la.ui.collapsed', []));
@@ -1106,7 +1134,8 @@ const collapsed = new Set(LS.get('la.ui.collapsed', []));
 function section(id, title, summary, content) {
   if (!content || (Array.isArray(content) && !content.filter(Boolean).length)) return null;
   const isOpen = !collapsed.has(id);
-  return h('section', { class: `group${isOpen ? '' : ' closed'}` },
+  const done = summary && summary.countId && summary.done;
+  return h('section', { class: `group${isOpen ? '' : ' closed'}${done ? ' done' : ''}`, 'data-group': id },
     h('button', {
       type: 'button', class: 'group-head', 'aria-expanded': isOpen ? 'true' : 'false',
       onclick: () => { if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id); LS.set('la.ui.collapsed', [...collapsed]); softRender(); },
@@ -1362,6 +1391,17 @@ function healthButton(date, today) {
   }, '♥ Apple-Health-Daten von gestern holen'));
 }
 
+/** Kleine Gewohnheiten nach optionaler Gruppe (z. B. „Supplements“) bündeln; ohne Gruppe zuerst. */
+function habitGroups(list) {
+  const groups = new Map();
+  for (const x of list) {
+    const g = x.group || '';
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(x);
+  }
+  return [...groups.entries()].sort((a, b) => (a[0] ? 1 : 0) - (b[0] ? 1 : 0));
+}
+
 function viewToday() {
   const today = logicalToday();
   if (todayUi.date && todayUi.date >= today) todayUi.date = null;
@@ -1385,7 +1425,7 @@ function viewToday() {
   const p1Habits = habits.filter((x) => (x.prio || 1) === 1);
   const p2Habits = habits.filter((x) => (x.prio || 1) !== 1);
   const counts = sectionCounts(date);
-  const countSum = (id) => ({ countId: id, text: countLabel(counts[id]) });
+  const countSum = (id) => ({ countId: id, text: countLabel(counts[id]), done: isDone(counts[id]) });
 
   const nutrition = nutritionOf(day);
   const training = trainingFor(date);
@@ -1421,7 +1461,10 @@ function viewToday() {
       section('measures', 'Messwerte', countSum('measures'), measures.map((m) => metricBlock(m, date))),
       section('habits', 'Gewohnheiten', countSum('habits'), [
         p1Habits.length ? h('div', { class: 'tiles' }, p1Habits.map((x) => boolTile(x, date, null, false))) : null,
-        p2Habits.length ? h('div', { class: `tiles compact${p1Habits.length ? ' spaced' : ''}` }, p2Habits.map((x) => boolTile(x, date, null, true))) : null,
+        habitGroups(p2Habits).map(([group, list]) => [
+          group ? h('p', { class: 'subhead' }, group) : null,
+          h('div', { class: 'tiles compact spaced' }, list.map((x) => boolTile(x, date, null, true))),
+        ]),
       ]),
       section('food', 'Ernährung', { text: nutrition.any ? `${fmtNum(nutrition.kcal)} kcal` : '–' }, mealsBlock(date, day)),
       section('training', 'Training', { text: trainingSum }, trainingBlock(date, day)),

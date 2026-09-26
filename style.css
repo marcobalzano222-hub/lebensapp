@@ -211,6 +211,8 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 .group-body { padding-bottom: 12px; }
 .group-body > .block:first-child { margin-top: 0; }
 .tiles.spaced { margin-top: 10px; }
+.group.done .group-title, .group.done .group-sum { color: var(--accent); }
+.subhead { font-size: 12px; color: var(--muted); margin: 12px 0 -4px; }
 .paused-note { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
 
 .block { margin-top: 18px; }
