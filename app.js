@@ -106,8 +106,505 @@ const LS = {
 };
 
 // ============================================================
+// Standardkonfiguration (Briefing 4.1 / 10)
+// ============================================================
+
+const DEFAULT_CONFIG = {
+  version: 1,
+  user: { name: '' },
+  windows: {
+    morning: { start: '06:00', end: '14:00' },
+    evening: { start: '14:00', end: '05:59' },
+  },
+  targets: {
+    daily: { kcal: null, protein: null, carbs: null },
+    weekly: { zone2_min: 60, strength_sessions: 3, hit_sessions: 1, sauna_sessions: 1 },
+  },
+  habits: [
+    { id: 'meditation_am', name: 'Meditation morgens', type: 'bool', slot: 'morning', prio: 1, active: true },
+    { id: 'light_am', name: 'Licht nach dem Aufstehen', type: 'bool', slot: 'morning', prio: 2, active: true },
+    { id: 'supplements', name: 'Supplements', type: 'bool', slot: 'morning', prio: 2, active: true, note: 'Omega 3, Vitamin D3, Magnesium, Creatin' },
+    { id: 'no_phone_night', name: 'Kein Handy vorm Schlafen (gestern)', type: 'bool', slot: 'morning', prio: 2, active: true, refersTo: 'previousDay' },
+    { id: 'meditation_pm', name: 'Meditation abends', type: 'bool', slot: 'evening', prio: 1, active: true },
+    { id: 'reading', name: 'Lesen', type: 'bool', slot: 'evening', prio: 2, active: true },
+  ],
+  metrics: [
+    { id: 'bp', name: 'Blutdruck', type: 'bloodpressure', slot: 'morning', prio: 1, active: true },
+    { id: 'weight', name: 'Gewicht', type: 'number', unit: 'kg', decimals: 1, slot: 'morning', prio: 1, active: true, source: 'manual' },
+    { id: 'body', name: 'Körper', type: 'scale10', slot: 'evening', prio: 1, active: true },
+    { id: 'mind', name: 'Geist', type: 'scale10', slot: 'evening', prio: 1, active: true },
+  ],
+  training: [
+    { id: 'strength', name: 'Kraft', type: 'session', presetsMin: [30, 45, 60, 75], prio: 1 },
+    { id: 'zone2', name: 'Zone 2', type: 'minutes', presetsMin: [20, 30, 45, 60], prio: 1 },
+    { id: 'hit', name: 'HIT', type: 'session', presetsMin: [10, 15, 20], prio: 1 },
+    { id: 'sauna', name: 'Sauna', type: 'session', prio: 2 },
+  ],
+  meals: [
+    { id: 'example_meal', name: 'Beispiel: Skyr mit Beeren', kcal: 250, protein: 30, carbs: 25 },
+  ],
+  pauseModes: [
+    { id: 'sick', name: 'Krank' },
+    { id: 'travel', name: 'Reise' },
+  ],
+};
+
+/** Fehlende Felder ergänzen, damit ältere oder handgeschriebene Konfigurationen nicht stören. */
+function normalizeConfig(c) {
+  const cfg = Object.assign(clone(DEFAULT_CONFIG), c || {});
+  cfg.user = Object.assign({ name: '' }, cfg.user);
+  cfg.windows = Object.assign(clone(DEFAULT_CONFIG.windows), cfg.windows);
+  cfg.targets = Object.assign({ daily: {}, weekly: {} }, cfg.targets);
+  cfg.targets.daily = Object.assign({ kcal: null, protein: null, carbs: null }, cfg.targets.daily);
+  cfg.targets.weekly = Object.assign({}, cfg.targets.weekly);
+  for (const k of ['habits', 'metrics', 'training', 'meals', 'pauseModes']) if (!Array.isArray(cfg[k])) cfg[k] = [];
+  return cfg;
+}
+
+/** Wochenziel-Schlüssel einer Trainingsart: Minuten bei type=minutes, sonst Einheiten. */
+const weeklyKey = (t) => (t.type === 'minutes' ? `${t.id}_min` : `${t.id}_sessions`);
+const isActive = (item) => item.active !== false;
+
+/** Stabile, kurze ID aus einem Namen, eindeutig innerhalb der Liste. */
+function slugId(name, list) {
+  const base = String(name).toLowerCase()
+    .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24) || 'item';
+  const taken = new Set(list.map((x) => x.id));
+  let id = base, i = 2;
+  while (taken.has(id)) id = `${base}_${i++}`;
+  return id;
+}
+
+// ============================================================
+// Verbindung und lokaler Cache
+// ============================================================
+// la.conn                  → { owner, repo, token }  (nur auf diesem Gerät)
+// la.d:<owner>/<repo>:<p>  → { data, sha }  Cache einer Repo-Datei
+// la.m:<owner>/<repo>      → { pending, lastSync, lastError, index }
+
+const conn = () => LS.get('la.conn');
+const repoKey = () => { const c = conn(); return c ? `${c.owner}/${c.repo}` : '_'; };
+
+const mem = {};                       // Arbeitskopie der Dateien im Speicher
+let meta = null;                      // Sync-Metadaten für das aktuelle Repo
+
+function loadMeta() {
+  meta = Object.assign({ pending: {}, rev: 0, lastSync: null, lastError: null, index: null }, LS.get(`la.m:${repoKey()}`, {}));
+}
+function saveMeta() { LS.set(`la.m:${repoKey()}`, meta); }
+
+const Store = {
+  get(path) {
+    if (!(path in mem)) mem[path] = LS.get(`la.d:${repoKey()}:${path}`);
+    return mem[path];
+  },
+  put(path, data, sha) {
+    mem[path] = { data, sha: sha === undefined ? (Store.get(path) || {}).sha || null : sha };
+    LS.set(`la.d:${repoKey()}:${path}`, mem[path]);
+  },
+  isPending: (path) => path in meta.pending,
+  /** Lokal speichern und zum Hochladen vormerken. */
+  change(path, data) {
+    Store.put(path, data);
+    meta.pending[path] = ++meta.rev;
+    saveMeta();
+    Sync.schedule();
+  },
+  clearAll() {
+    const prefix = `la.d:${repoKey()}:`;
+    try {
+      for (const k of Object.keys(localStorage)) if (k.startsWith(prefix)) localStorage.removeItem(k);
+    } catch { /* egal */ }
+    LS.del(`la.m:${repoKey()}`);
+    for (const k of Object.keys(mem)) delete mem[k];
+  },
+};
+
+// ---------- Konfiguration ----------
+
+let config = null;
+
+function loadConfigFromCache() {
+  const f = Store.get('config.json');
+  config = f ? normalizeConfig(f.data) : null;
+}
+function saveConfig(message = 'config: update') {
+  meta.commitMsg = Object.assign(meta.commitMsg || {}, { 'config.json': message });
+  Store.change('config.json', config);
+}
+
+// ---------- Tage ----------
+
+const dayPath = (date) => `days/${date}.json`;
+const emptyDay = (date) => ({ date, updatedAt: null, pause: null, habits: {}, metrics: {}, training: [], meals: [] });
+
+function getDay(date) {
+  const f = Store.get(dayPath(date));
+  return f ? f.data : null;
+}
+
+/** Tag ändern: fn bekommt eine Kopie und darf sie verändern. */
+function updateDay(date, fn) {
+  const d = Object.assign(emptyDay(date), clone(getDay(date)) || {});
+  fn(d);
+  d.updatedAt = isoLocal();
+  Store.change(dayPath(date), d);
+}
+
+// ============================================================
+// GitHub Contents API
+// ============================================================
+
+class HttpError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+
+function b64encode(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+function b64decode(b64) {
+  const bin = atob(String(b64).replace(/\s/g, ''));
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function httpMessage(status, body) {
+  if (status === 401) return 'Token ungültig oder abgelaufen.';
+  if (status === 403) return (body && /rate limit/i.test(body.message || '')) ? 'GitHub-Limit erreicht, bitte später erneut.' : 'Keine Berechtigung. Hat der Token „Contents: Read and write“ für dieses Repo?';
+  if (status === 404) return 'Repo oder Datei nicht gefunden (oder der Token hat keinen Zugriff darauf).';
+  return `GitHub-Fehler ${status}${body && body.message ? `: ${body.message}` : ''}`;
+}
+
+const GH = {
+  async req(method, path, body, { keepalive = false, c = conn() } = {}) {
+    const url = `https://api.github.com/repos/${encodeURIComponent(c.owner)}/${encodeURIComponent(c.repo)}${path}`;
+    return fetch(url, {
+      method,
+      cache: 'no-store',
+      keepalive,
+      headers: {
+        Authorization: `Bearer ${c.token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  },
+  async fail(res) {
+    let body = null;
+    try { body = await res.json(); } catch { /* keine JSON-Antwort */ }
+    throw new HttpError(res.status, httpMessage(res.status, body));
+  },
+  async repo(c) {
+    const res = await GH.req('GET', '', null, { c });
+    if (!res.ok) await GH.fail(res);
+    return res.json();
+  },
+  /** Datei lesen → { data, sha } oder null, wenn es sie nicht gibt. */
+  async getFile(path, c) {
+    const res = await GH.req('GET', `/contents/${path}`, null, { c });
+    if (res.status === 404) return null;
+    if (!res.ok) await GH.fail(res);
+    const j = await res.json();
+    return { data: JSON.parse(b64decode(j.content)), sha: j.sha };
+  },
+  /** Verzeichnis auflisten → [{ name, sha }] (leer, wenn es fehlt). */
+  async listDir(path) {
+    const res = await GH.req('GET', `/contents/${path}`);
+    if (res.status === 404) return [];
+    if (!res.ok) await GH.fail(res);
+    const j = await res.json();
+    return Array.isArray(j) ? j.map((f) => ({ name: f.name, sha: f.sha })) : [];
+  },
+  /** Datei schreiben; liefert die neue sha. Wirft HttpError (409/422 = Konflikt). */
+  async putFile(path, data, sha, message, opts = {}) {
+    const body = { message, content: b64encode(JSON.stringify(data, null, 2) + '\n') };
+    if (sha) body.sha = sha;
+    const res = await GH.req('PUT', `/contents/${path}`, body, opts);
+    if (!res.ok) await GH.fail(res);
+    const j = await res.json();
+    return j.content.sha;
+  },
+};
+
+/** Feldweise zusammenführen: lokal gewinnt bei gleichen Feldern, Listen werden ganz ersetzt. */
+function mergeLocalOver(remote, local) {
+  if (Array.isArray(local) || typeof local !== 'object' || local === null) return local;
+  if (typeof remote !== 'object' || remote === null || Array.isArray(remote)) return local;
+  const out = { ...remote };
+  for (const [k, v] of Object.entries(local)) out[k] = k in remote ? mergeLocalOver(remote[k], v) : v;
+  return out;
+}
+
+function commitMessage(path) {
+  if (path.startsWith('days/')) return `day: ${path.slice(5, 15)}`;
+  if (path === 'config.json') return (meta.commitMsg && meta.commitMsg[path]) || 'config: update';
+  return `update: ${path}`;
+}
+
+// ============================================================
+// Synchronisation
+// ============================================================
+
+const Sync = {
+  timer: null,
+  running: false,
+  again: false,
+  offline: false,
+
+  schedule(delay = 3000) {
+    clearTimeout(Sync.timer);
+    Sync.timer = setTimeout(() => Sync.flush(), delay);
+    updateDot();
+  },
+
+  /** Alle ausstehenden Dateien schreiben. */
+  async flush({ keepalive = false } = {}) {
+    clearTimeout(Sync.timer);
+    if (!conn()) return;
+    if (Sync.running) { Sync.again = true; return; }
+    Sync.running = true;
+    updateDot();
+    try {
+      for (const path of Object.keys(meta.pending)) await Sync.pushOne(path, keepalive);
+      Sync.offline = false;
+      meta.lastSync = isoLocal();
+      meta.lastError = null;
+    } catch (e) {
+      Sync.handleError(e);
+    } finally {
+      Sync.running = false;
+      saveMeta();
+      updateDot();
+      if (Sync.again) { Sync.again = false; Sync.flush(); }
+    }
+  },
+
+  async pushOne(path, keepalive) {
+    const rev = meta.pending[path];
+    const local = Store.get(path);
+    if (!local) { delete meta.pending[path]; return; }
+    let data = local.data, sha = local.sha;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const newSha = await GH.putFile(path, data, sha, commitMessage(path), { keepalive });
+        // Nur als erledigt markieren, wenn es währenddessen keine neue lokale Änderung gab.
+        if (meta.pending[path] === rev) {
+          delete meta.pending[path];
+          Store.put(path, data, newSha);
+          if (meta.commitMsg) delete meta.commitMsg[path];
+        } else {
+          Store.put(path, Store.get(path).data, newSha);
+        }
+        if (meta.index && path.startsWith('days/')) meta.index[path.slice(5, 15)] = newSha;
+        return;
+      } catch (e) {
+        const conflict = e instanceof HttpError && (e.status === 409 || e.status === 422);
+        if (!conflict || attempt >= 3) throw e;
+        // SHA veraltet: neu laden, lokale Felder darüberlegen, erneut schreiben.
+        const remote = await GH.getFile(path);
+        const current = Store.get(path).data;
+        data = remote ? mergeLocalOver(remote.data, current) : current;
+        sha = remote ? remote.sha : null;
+        Store.put(path, data, sha);
+        if (path === 'config.json') { config = normalizeConfig(data); }
+      }
+    }
+  },
+
+  handleError(e) {
+    if (e instanceof HttpError) {
+      meta.lastError = e.message;
+      Sync.offline = false;
+    } else {
+      // Netzwerkfehler: offline – Warteschlange bleibt stehen.
+      Sync.offline = true;
+      meta.lastError = navigator.onLine ? `Netzwerkfehler: ${e.message}` : null;
+    }
+  },
+
+  pendingCount: () => (meta ? Object.keys(meta.pending).length : 0),
+};
+
+function syncState() {
+  if (!conn() || !meta) return 'none';
+  if (meta.lastError && !Sync.offline) return 'error';
+  if (Sync.pendingCount() > 0 || Sync.running) return 'pending';
+  return 'ok';
+}
+
+function updateDot() {
+  const dot = $('#sync-dot');
+  const s = syncState();
+  dot.className = `dot ${s}`;
+  const labels = { ok: 'Synchron', pending: 'Änderungen ausstehend', error: 'Sync-Fehler', none: 'Nicht verbunden' };
+  dot.setAttribute('aria-label', labels[s]);
+  dot.title = labels[s];
+}
+
+// ---------- Laden aus dem Repo ----------
+
+/** Liste der Tagesdateien (Datum → sha) aktualisieren. */
+async function refreshIndex() {
+  const files = await GH.listDir('days');
+  const index = {};
+  for (const f of files) {
+    const m = /^(\d{4}-\d{2}-\d{2})\.json$/.exec(f.name);
+    if (m) index[m[1]] = f.sha;
+  }
+  meta.index = index;
+  saveMeta();
+}
+
+/** Alle Tage im Bereich laden, die im Repo neuer sind als der Cache. */
+async function ensureDays(from, to) {
+  if (!meta.index) await refreshIndex();
+  const wanted = Object.keys(meta.index).filter((date) => {
+    if ((from && date < from) || (to && date > to)) return false;
+    const path = dayPath(date);
+    if (Store.isPending(path)) return false;
+    const cached = Store.get(path);
+    return !cached || cached.sha !== meta.index[date];
+  });
+  let changed = false;
+  const queue = [...wanted];
+  const worker = async () => {
+    while (queue.length) {
+      const date = queue.shift();
+      const f = await GH.getFile(dayPath(date));
+      if (f && !Store.isPending(dayPath(date))) { Store.put(dayPath(date), f.data, f.sha); changed = true; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(6, queue.length) }, worker));
+  return changed;
+}
+
+let refreshing = null;
+/** Hintergrund-Aktualisierung: config.json, Tagesliste, letzte 14 Tage. */
+function refreshFromRemote() {
+  if (!conn()) return Promise.resolve();
+  if (refreshing) return refreshing;
+  refreshing = (async () => {
+    try {
+      let changed = false;
+      if (!Store.isPending('config.json')) {
+        const remote = await GH.getFile('config.json');
+        const cached = Store.get('config.json');
+        if (remote && (!cached || cached.sha !== remote.sha)) {
+          Store.put('config.json', remote.data, remote.sha);
+          loadConfigFromCache();
+          changed = true;
+        }
+      }
+      await refreshIndex();
+      const today = logicalToday();
+      if (await ensureDays(addDays(today, -14), today)) changed = true;
+      Sync.offline = false;
+      if (meta.lastError && Sync.pendingCount() === 0) meta.lastError = null;
+      if (changed) softRender();
+      if (Sync.pendingCount() > 0) Sync.flush();
+    } catch (e) {
+      Sync.handleError(e);
+      saveMeta();
+    } finally {
+      refreshing = null;
+      updateDot();
+    }
+  })();
+  return refreshing;
+}
+
+// ============================================================
+// Zeitfenster und Tageszuordnung
+// ============================================================
+
+function inWindow(m, w) {
+  const s = toMin(w.start), e = toMin(w.end);
+  return s <= e ? m >= s && m <= e : m >= s || m <= e;
+}
+
+/** Logisches „Heute“: Bis zum Ende des Abendfensters (z. B. 05:59) zählt noch der Vortag. */
+function logicalToday(now = new Date()) {
+  const today = ymd(now);
+  if (!config) return today;
+  const ev = config.windows.evening;
+  const s = toMin(ev.start), e = toMin(ev.end);
+  if (e < s && nowMin(now) <= e) return addDays(today, -1);
+  return today;
+}
+
+/** Aktueller Check-in nach Uhrzeit. */
+function currentSlot(now = new Date()) {
+  if (!config) return 'morning';
+  const m = nowMin(now);
+  if (inWindow(m, config.windows.morning)) return 'morning';
+  return 'evening';
+}
+
+// ============================================================
 // Ansichten
 // ============================================================
+
+// ---------- Onboarding ----------
+
+function viewOnboarding() {
+  const prev = conn() || LS.get('la.lastConn') || {};
+  const owner = h('input', { type: 'text', value: prev.owner || '', autocapitalize: 'off', autocorrect: 'off', spellcheck: false, autocomplete: 'username', placeholder: 'z. B. satoshi' });
+  const repo = h('input', { type: 'text', value: prev.repo || '', autocapitalize: 'off', autocorrect: 'off', spellcheck: false, placeholder: 'z. B. lebensapp-data-satoshi' });
+  const token = h('input', { type: 'password', autocapitalize: 'off', autocorrect: 'off', spellcheck: false, autocomplete: 'off', placeholder: 'github_pat_…' });
+  const msg = h('p', { class: 'error-text', role: 'status' });
+  const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'Verbindung testen');
+
+  async function submit(e) {
+    e.preventDefault();
+    const c = { owner: owner.value.trim(), repo: repo.value.trim(), token: token.value.trim() };
+    if (!c.owner || !c.repo || !c.token) { msg.textContent = 'Bitte alle drei Felder ausfüllen.'; return; }
+    btn.disabled = true; msg.textContent = ''; btn.textContent = 'Verbinde …';
+    try {
+      const r = await GH.repo(c);
+      if (!r.private) msg.textContent = 'Hinweis: Dieses Repo ist öffentlich. Für Gesundheitsdaten bitte ein privates Repo verwenden.';
+      const remote = await GH.getFile('config.json', c);
+      // Erst nach erfolgreichem Test speichern.
+      LS.set('la.conn', c);
+      LS.set('la.lastConn', { owner: c.owner, repo: c.repo });
+      loadMeta();
+      if (remote) {
+        Store.put('config.json', remote.data, remote.sha);
+        loadConfigFromCache();
+        ui.tab = 'today';
+      } else {
+        config = normalizeConfig(clone(DEFAULT_CONFIG));
+        config.user.name = c.owner;
+        saveConfig('config: initial');
+        await Sync.flush();
+        ui.tab = 'setup';
+      }
+      LS.set('la.ui.tab', ui.tab);
+      if (r.private) render();
+      else setTimeout(render, 2500);
+      refreshFromRemote();
+    } catch (err) {
+      msg.textContent = err instanceof HttpError ? err.message : 'Keine Verbindung zu GitHub. Bist du online?';
+      btn.disabled = false; btn.textContent = 'Verbindung testen';
+    }
+  }
+
+  return h('form', { class: 'welcome', onsubmit: submit, autocomplete: 'off' },
+    h('h1', {}, 'Lebensapp'),
+    h('p', { class: 'lead' }, 'Zwei kurze Check-ins am Tag. Deine Daten liegen in deinem eigenen privaten GitHub-Repo.'),
+    h('label', { class: 'field' }, h('span', {}, 'GitHub-Benutzername'), owner),
+    h('label', { class: 'field' }, h('span', {}, 'Daten-Repo'), repo),
+    h('label', { class: 'field' }, h('span', {}, 'Fine-grained Token'), token),
+    h('p', { class: 'hint' }, 'Der Token bleibt nur auf diesem Gerät. Anleitung zum Anlegen: siehe README der App.'),
+    h('div', { class: 'btn-row' }, btn),
+    msg,
+  );
+}
 
 const views = {
   today: () => h('div', {}, h('h1', {}, 'Heute')),
@@ -129,24 +626,70 @@ function setTab(tab) {
   LS.set('la.ui.tab', tab);
   window.scrollTo(0, 0);
   render();
+  if (tab === 'week') ensureWeekData();
 }
 
 function render() {
   const view = $('#view');
+  updateDot();
+  if (!conn() || !config) {
+    document.body.classList.add('no-tabs');
+    view.replaceChildren(viewOnboarding());
+    return;
+  }
   document.body.classList.remove('no-tabs');
   for (const b of document.querySelectorAll('#tabbar button')) b.classList.toggle('active', b.dataset.tab === ui.tab);
   view.replaceChildren((views[ui.tab] || views.today)());
 }
+
+/** Neu zeichnen, außer der Nutzer tippt gerade in ein Feld. */
+function softRender() {
+  const a = document.activeElement;
+  if (a && (a.tagName === 'INPUT' || a.tagName === 'SELECT') && $('#view').contains(a)) return;
+  const y = window.scrollY;
+  render();
+  window.scrollTo(0, y);
+}
+
+/** Daten für die Wochenansicht (8 Wochen für Sparklines) nachladen. */
+function ensureWeekData() { return Promise.resolve(); }
+
+let hiddenAt = 0;
 
 function init() {
   $('#tabbar').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-tab]');
     if (b) setTab(b.dataset.tab);
   });
-  render();
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  $('#sync-dot').addEventListener('click', () => { if (conn() && config) setTab('sync'); });
+
+  loadMeta();
+  loadConfigFromCache();
+  render();                      // sofort aus dem lokalen Cache, kein Ladebildschirm
+  refreshFromRemote();
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      hiddenAt = Date.now();
+      if (Sync.pendingCount() > 0) Sync.flush({ keepalive: true });
+    } else {
+      onResume(Date.now() - hiddenAt > 10 * 60 * 1000);
+      refreshFromRemote();
+    }
+  });
+  window.addEventListener('online', () => { Sync.offline = false; Sync.flush(); });
+  window.addEventListener('offline', () => { Sync.offline = true; updateDot(); });
+  // Morgen/Abend-Wechsel und Tageswechsel auch bei offener App.
+  setInterval(() => onResume(false), 60 * 1000);
+
+  // Lokal (Entwicklung) ohne Service Worker, damit Änderungen sofort sichtbar sind; mit ?sw=1 erzwingen.
+  const dev = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && !/[?&]sw=1/.test(location.search);
+  if ('serviceWorker' in navigator && location.protocol !== 'file:' && !dev) {
     navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('Service Worker:', e.message));
   }
 }
+
+/** Nach Rückkehr in die App: automatischen Check-in und „Heute“ neu bestimmen. */
+function onResume() { softRender(); }
 
 init();
