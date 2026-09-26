@@ -957,8 +957,14 @@ function viewSetup() {
 
     h('h2', {}, 'Apple Health'),
     h('p', { class: 'hint' },
-      'Schritte, Schlaf, Gewicht und Workouts kommen täglich vom iOS-Kurzbefehl. ',
-      h('a', { href: shortcutGuideUrl(), target: '_blank', rel: 'noopener' }, 'Anleitung zum Kurzbefehl'), '.'),
+      'Schritte, Schlaf und Gewicht kommen vom iOS-Kurzbefehl „Lebensapp Health“. ',
+      h('a', { href: 'shortcuts/Lebensapp-Health.shortcut' }, 'Kurzbefehl laden'), ' · ',
+      h('a', { href: shortcutGuideUrl(), target: '_blank', rel: 'noopener' }, 'Anleitung'), '.'),
+    h('div', { class: 'btn-row' }, h('button', {
+      type: 'button', class: `toggle${c.health.shortcut ? ' on' : ''}`,
+      onclick: () => { c.health.shortcut = !c.health.shortcut; commitConfig('health', true); },
+    }, c.health.shortcut ? 'Kurzbefehl installiert ✓' : 'Kurzbefehl ist installiert')),
+    h('p', { class: 'hint' }, 'Dann erscheint morgens ein Knopf, der die Daten von gestern überträgt, falls sie noch fehlen.'),
     h('p', { class: 'hint' }, lastHealth ? `Letzte Health-Daten: ${formatDateLong(lastHealth)}.` : 'Noch keine Health-Daten empfangen.'),
     seenTypes.length ? [h('p', { class: 'hint' }, 'Workout-Typen zuordnen (Health-Workouts ersetzen manuelle Einträge derselben Art):'),
       h('div', { class: 'rows' }, mapRows)] : null,
@@ -1242,6 +1248,15 @@ function attachSwipe(el, onLeft, onRight) {
   }, { passive: true });
 }
 
+/** Morgens: Kurzbefehl starten, wenn die Health-Daten von gestern noch fehlen. */
+function healthButton(date, today, slot) {
+  if (!config.health.shortcut || date !== today || slot !== 'morning') return null;
+  if (Store.get(healthPath(addDays(today, -1)))) return null;
+  return h('div', { class: 'block' }, h('a', {
+    class: 'btn block health-btn', href: `shortcuts://run-shortcut?name=${encodeURIComponent('Lebensapp Health')}`,
+  }, '♥ Apple-Health-Daten von gestern holen'));
+}
+
 function viewToday() {
   const today = logicalToday();
   if (todayUi.date && todayUi.date >= today) todayUi.date = null;
@@ -1300,6 +1315,7 @@ function viewToday() {
       paused ? h('p', { class: 'paused-note' }, 'Pause-Tag: zählt nicht in Durchschnitte und Wochenziele. Eingaben sind trotzdem möglich.') : null,
       bigFirst(p1Metrics).map((m) => metricBlock(m, date, slot)),
       slot === 'evening' ? [mealsBlock(date, day), trainingBlock(date, day)] : null,
+      healthButton(date, today, slot),
       p1Habits.length ? h('div', { class: 'block' }, h('div', { class: 'tiles' }, p1Habits.map((x) => boolTile(x, date, slot, false)))) : null,
       scales(p1Metrics).map((m) => metricBlock(m, date, slot)),
       p2Habits.length ? h('div', { class: 'block' }, h('div', { class: 'tiles compact' }, p2Habits.map((x) => boolTile(x, date, slot, true)))) : null,

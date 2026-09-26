@@ -382,3 +382,4 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 .welcome .lead { color: var(--muted); font-size: 17px; margin-bottom: 24px; }
 
 a { color: var(--accent); }
+.health-btn { display: flex; align-items: center; justify-content: center; text-decoration: none; color: var(--text); }
