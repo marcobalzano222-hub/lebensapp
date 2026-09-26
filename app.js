@@ -143,9 +143,8 @@ const DEFAULT_CONFIG = {
     { id: 'hit', name: 'HIT', type: 'session', presetsMin: [10, 15, 20], prio: 1 },
     { id: 'sauna', name: 'Sauna', type: 'session', prio: 2 },
   ],
-  meals: [
-    { id: 'example_meal', name: 'Beispiel: Skyr mit Beeren', kcal: 250, protein: 30, carbs: 25 },
-  ],
+  meals: [],
+  recipes: [],
   counters: [
     { id: 'sweets', name: 'Süßes', active: true },
     { id: 'alcohol', name: 'Alkohol', active: true },
@@ -166,9 +165,10 @@ function normalizeConfig(c) {
   cfg.user = Object.assign({ name: '' }, cfg.user);
   cfg.windows = Object.assign(clone(DEFAULT_CONFIG.windows), cfg.windows);
   cfg.targets = Object.assign({ daily: {}, weekly: {} }, cfg.targets);
-  cfg.targets.daily = Object.assign({ kcal: null, protein: null, carbs: null, steps: null, sleepH: null }, cfg.targets.daily);
+  cfg.targets.daily = Object.assign({ kcal: null, protein: null, fat: null, carbs: null, steps: null, sleepH: null }, cfg.targets.daily);
   cfg.targets.weekly = Object.assign({}, cfg.targets.weekly);
-  for (const k of ['habits', 'metrics', 'training', 'meals', 'counters', 'pauseModes']) if (!Array.isArray(cfg[k])) cfg[k] = [];
+  for (const k of ['habits', 'metrics', 'training', 'meals', 'counters', 'pauseModes', 'recipes']) if (!Array.isArray(cfg[k])) cfg[k] = [];
+  if (!Array.isArray(cfg.foods)) cfg.foods = clone(DEFAULT_FOODS);
   cfg.health = Object.assign({ workoutMap: {} }, cfg.health);
   if (!cfg.health.workoutMap || typeof cfg.health.workoutMap !== 'object') cfg.health.workoutMap = {};
   return cfg;
@@ -190,6 +190,14 @@ function migrateConfig(cfg) {
       cfg.habits.splice(at, 0, ...add.filter((x) => !cfg.habits.some((y) => y.id === x.id)));
     }
     cfg.migrations.push('split_supplements');
+    changed = true;
+  }
+  if (!cfg.migrations.includes('meals_to_recipes')) {
+    // Frühere Mahlzeiten (feste Nährwerte) werden zu Rezepten; das Beispiel entfällt.
+    for (const m of cfg.meals.filter((x) => isActive(x) && x.id !== 'example_meal')) {
+      if (!cfg.recipes.some((r) => r.id === m.id)) cfg.recipes.push({ id: m.id, name: m.name, kcal: m.kcal || 0, protein: m.protein || 0, fat: m.fat || 0, carbs: m.carbs || 0, active: true });
+    }
+    cfg.migrations.push('meals_to_recipes');
     changed = true;
   }
   if (!cfg.migrations.includes('add_counters')) {
@@ -967,6 +975,8 @@ function addRow(fields, onAdd) {
   return h('div', { class: `add-row${fields.length > 1 ? ' multi' : ''}` }, fields, btn);
 }
 
+const setupUi = { focus: null, openCat: null, recipeOpen: null };
+
 function viewSetup() {
   const c = config;
   const firstRun = !Object.keys(meta.index || {}).length && !Object.keys(mem).some((p) => p.startsWith('days/') && mem[p]);
@@ -1016,13 +1026,50 @@ function viewSetup() {
   const newTrain = h('input', { type: 'text', placeholder: 'Neue Trainingsart' });
   const newTrainType = selectEl(TRAIN_TYPES, 'session', () => {});
 
-  // Mahlzeiten
-  const macro = (it, key, label) => h('label', { class: 'inline' }, label,
-    numEl(it[key], (v) => { it[key] = v ?? 0; commitConfig('meals'); }));
-  const mealRows = c.meals.map((it, i) => editRow(c.meals, i, 'meals', [
-    macro(it, 'kcal', 'kcal'), macro(it, 'protein', 'P'), macro(it, 'carbs', 'KH'),
-  ]));
-  const newMeal = h('input', { type: 'text', placeholder: 'Neue Mahlzeit' });
+  // Lebensmittel (je Kategorie aufklappbar) und Rezepte
+  const macroInputs = (it, what) => MACROS.map((k) => h('label', { class: 'inline' }, { kcal: 'kcal', protein: 'P', fat: 'F', carbs: 'KH' }[k],
+    numEl(it[k], (v) => { it[k] = v ?? 0; commitConfig(what); }, { decimal: k !== 'kcal' })));
+  const foodRow = (it) => h('div', { class: `row${isActive(it) ? '' : ' inactive'}` },
+    h('div', { class: 'row-main' },
+      textEl(it.name, (v) => { if (v.trim()) { it.name = v.trim(); commitConfig('foods'); } }, { 'aria-label': 'Name' }),
+      textEl(it.unit, (v) => { it.unit = v.trim(); commitConfig('foods'); }, { 'aria-label': 'Einheit', placeholder: 'Einheit', style: 'max-width:120px' })),
+    h('div', { class: 'row-opts' }, macroInputs(it, 'foods'),
+      h('button', { type: 'button', class: `toggle${isActive(it) ? ' on' : ''}`, onclick: () => { it.active = !isActive(it); commitConfig('foods', true); } }, isActive(it) ? 'Aktiv' : 'Inaktiv')));
+  const foodCats = Object.entries(FOOD_CATS).map(([cat, label]) => {
+    const list = c.foods.filter((f) => f.cat === cat);
+    return h('details', { class: 'cat', open: setupUi.openCat === cat },
+      h('summary', { onclick: () => { setupUi.openCat = setupUi.openCat === cat ? null : cat; } }, `${label} (${list.filter(isActive).length})`),
+      h('div', { class: 'rows' }, list.map(foodRow)));
+  });
+  const newFood = h('input', { type: 'text', placeholder: 'Neues Lebensmittel' });
+  const newFoodCat = selectEl(FOOD_CATS, 'protein', () => {});
+  const newFoodUnit = h('input', { type: 'text', placeholder: 'Einheit, z. B. 50 g', style: 'max-width:140px' });
+
+  const recipeRow = (r) => {
+    const open = setupUi.recipeOpen === r.id;
+    const m = recipeMacros(r);
+    const setItem = (f, delta) => {
+      r.items = { ...(r.items || {}) };
+      const n = Math.max(0, (r.items[f.id] || 0) + delta);
+      if (n) r.items[f.id] = n; else delete r.items[f.id];
+      commitConfig('recipes', true);
+    };
+    return h('div', { class: `row${isActive(r) ? '' : ' inactive'}` },
+      h('div', { class: 'row-main' },
+        textEl(r.name, (v) => { if (v.trim()) { r.name = v.trim(); commitConfig('recipes'); } }, { 'aria-label': 'Name' }),
+        h('button', { type: 'button', class: `toggle${open ? ' on' : ''}`, onclick: () => { setupUi.recipeOpen = open ? null : r.id; softRender(); } }, open ? 'Fertig' : 'Zutaten')),
+      h('p', { class: 'hint' }, r.items
+        ? `${Object.entries(r.items).map(([id, n]) => `${n}× ${(c.foods.find((f) => f.id === id) || { name: id }).name}`).join(', ') || 'noch keine Zutaten'} · ${fmtMacro(m)}`
+        : `feste Werte · ${fmtMacro(m)}`),
+      open ? [
+        h('p', { class: 'hint' }, 'Zutaten antippen (+1), lange drücken (−1). Die Nährwerte rechnet die App.'),
+        Object.entries(FOOD_CATS).map(([cat, label]) => [h('p', { class: 'subhead' }, label), h('div', { class: 'food-chips' },
+          c.foods.filter((f) => isActive(f) && f.cat === cat).map((f) => foodChip(f.name, f.unit, (r.items || {})[f.id] || 0, () => setItem(f, 1), () => setItem(f, -1))))]),
+      ] : null,
+      h('div', { class: 'row-opts' },
+        h('button', { type: 'button', class: `toggle${isActive(r) ? ' on' : ''}`, onclick: () => { r.active = !isActive(r); commitConfig('recipes', true); } }, isActive(r) ? 'Aktiv' : 'Inaktiv')));
+  };
+  const newRecipe = h('input', { type: 'text', placeholder: 'Neues Rezept, z. B. Mittag-Bowl' });
 
   // Ziele
   const dailyField = (key, label) => h('label', { class: 'field' }, h('span', {}, label),
@@ -1109,7 +1156,7 @@ function viewSetup() {
 
     h('h2', {}, 'Ziele'),
     h('p', { class: 'hint' }, 'Tagesziele Ernährung'),
-    h('div', { class: 'pair' }, dailyField('kcal', 'kcal'), dailyField('protein', 'Protein (g)'), dailyField('carbs', 'Carbs (g)')),
+    h('div', { class: 'pair' }, dailyField('kcal', 'kcal'), dailyField('protein', 'Protein (g)'), dailyField('fat', 'Fett (g)'), dailyField('carbs', 'Carbs max. (g)')),
     h('p', { class: 'hint' }, 'Tagesziele Aktivität & Schlaf'),
     h('div', { class: 'pair' }, dailyField('steps', 'Schritte pro Tag'),
       h('label', { class: 'field' }, h('span', {}, 'Schlaf pro Nacht (Stunden)'),
@@ -1117,11 +1164,22 @@ function viewSetup() {
     h('p', { class: 'hint' }, 'Wochenziele Training'),
     h('div', { class: 'pair' }, weeklyFields),
 
-    h('h2', {}, 'Mahlzeiten'),
-    h('div', { class: 'rows' }, mealRows.length ? mealRows : h('p', { class: 'empty-note' }, 'Noch keine Mahlzeiten.')),
-    addRow([newMeal], (name) => {
-      c.meals.push({ id: slugId(name, c.meals), name, kcal: 0, protein: 0, carbs: 0, active: true });
-      commitConfig('meals');
+    h('h2', { id: 'setup-foods' }, 'Rezepte'),
+    h('div', { class: 'rows' }, c.recipes.length ? c.recipes.map(recipeRow) : h('p', { class: 'empty-note' }, 'Noch keine Rezepte. Lege eins an und tippe die Zutaten an.')),
+    addRow([newRecipe], (name) => {
+      const r = { id: slugId(name, c.recipes), name, items: {}, active: true };
+      c.recipes.push(r);
+      setupUi.recipeOpen = r.id;
+      commitConfig('recipes');
+    }),
+
+    h('h2', {}, 'Lebensmittel'),
+    h('p', { class: 'hint' }, 'Nährwerte je Einheit (Richtwerte). Im Reiter Heute stehen die häufigsten vorne.'),
+    foodCats,
+    addRow([newFood, newFoodCat, newFoodUnit], (name, [, cat, unit]) => {
+      c.foods.push({ id: slugId(name, c.foods), name, cat, unit: unit.trim() || '1 Portion', kcal: 0, protein: 0, fat: 0, carbs: 0, active: true });
+      setupUi.openCat = cat;
+      commitConfig('foods');
     }),
 
     h('h2', {}, 'Tageswechsel'),
@@ -1169,7 +1227,7 @@ function viewSetup() {
 
 // ---------- Heute ----------
 
-const todayUi = { date: null, pauseOpen: false, trainOpen: null, foodOpen: false, ensured: null };
+const todayUi = { date: null, pauseOpen: false, trainOpen: null, foodOpen: false, moreCats: new Set(), ensured: null };
 
 const byPrio = (list) => list.map((x, i) => [x, i]).sort((a, b) => (a[0].prio || 1) - (b[0].prio || 1) || a[1] - b[1]).map((x) => x[0]);
 const habitDate = (hb, date) => (hb.refersTo === 'previousDay' ? addDays(date, -1) : date);
@@ -1411,123 +1469,267 @@ function trainingBlock(date, day) {
     })) : null);
 }
 
-/** Summen aus dem Snapshot (Makros zum Zeitpunkt der Eingabe). */
-function nutritionOf(day) {
-  const sum = { kcal: 0, protein: 0, carbs: 0, any: false };
-  const snap = day.mealsSnapshot || [];
-  for (const e of day.meals || []) {
-    const src = snap.find((s) => s.id === e.id) || config.meals.find((m) => m.id === e.id) || {};
-    for (const k of ['kcal', 'protein', 'carbs']) sum[k] += (src[k] || 0) * (e.count || 0);
-    if (e.count) sum.any = true;
-  }
-  // Freie Einträge (nur Nährwerte, ohne gespeicherte Mahlzeit)
-  for (const f of day.food || []) {
-    for (const k of ['kcal', 'protein', 'carbs']) sum[k] += f[k] || 0;
-    sum.any = true;
+// ---------- Ernährung ----------
+// Lebensmittel-Chips mit kleinster sinnvoller Einheit; Nährwerte je Einheit (Richtwerte, im Setup änderbar).
+
+const FOOD_CATS = { protein: 'Protein', carbs: 'Kohlenhydrate', veg: 'Gemüse & Obst', fat: 'Fette & Saaten', sweet: 'Süßes & Getränke' };
+const MACROS = ['kcal', 'protein', 'fat', 'carbs'];
+
+// [id, Name, Kategorie, Einheit, kcal, Protein, Fett, Carbs, Negativ-Zähler]
+const DEFAULT_FOODS = [
+  ['egg', 'Ei', 'protein', '1 Stück', 80, 7, 5.5, 0.5],
+  ['cheese', 'Käse', 'protein', '1 Scheibe (25 g)', 95, 6.5, 7.5, 0],
+  ['parmesan', 'Parmesan', 'protein', '10 g', 40, 3.5, 2.9, 0],
+  ['feta', 'Feta', 'protein', '25 g', 65, 4, 5.3, 0.2],
+  ['mozzarella', 'Mozzarella', 'protein', '25 g', 63, 4.6, 4.8, 0.3],
+  ['cottage', 'Körniger Frischkäse', 'protein', '50 g', 50, 6.3, 2, 1.5],
+  ['skyr', 'Skyr', 'protein', '50 g', 32, 5.5, 0.1, 2],
+  ['skyr_drink', 'Skyr Drink', 'protein', '100 ml', 60, 8, 0.2, 6],
+  ['greek_yogurt', 'Griech. Joghurt', 'protein', '50 g', 60, 3, 5, 2],
+  ['yogurt', 'Joghurt', 'protein', '50 g', 32, 1.7, 1.8, 2.2],
+  ['whey', 'Whey', 'protein', '1 Messlöffel (30 g)', 115, 24, 1.5, 2],
+  ['protein_milk', 'Proteinmilch', 'protein', '100 ml', 60, 10, 0.2, 4],
+  ['protein_pudding', 'Protein-Pudding', 'protein', '1 Becher (200 g)', 150, 20, 3, 10],
+  ['protein_bar', 'Proteinriegel', 'protein', '1 Riegel', 180, 20, 6, 12],
+  ['protein_ball', 'Protein Ball', 'protein', '1 Stück', 85, 4, 5, 6],
+  ['protein_wrap', 'Protein-Wrap', 'protein', '1 Wrap', 170, 12, 4, 18],
+  ['chicken', 'Hähnchen', 'protein', '50 g', 55, 12, 0.7, 0],
+  ['turkey', 'Pute', 'protein', '50 g', 53, 12, 0.5, 0],
+  ['beef_mince', 'Rinderhack', 'protein', '50 g', 108, 9.5, 7.5, 0],
+  ['steak', 'Rindersteak', 'protein', '50 g', 62, 11, 2, 0],
+  ['patty', 'Burger-Patty', 'protein', '1 Patty', 290, 23, 21, 0],
+  ['chicken_sausage', 'Hähnchen-Bratwurst', 'protein', '1 Wurst', 190, 15, 14, 1],
+  ['ham', 'Schinken', 'protein', '1 Scheibe', 22, 4, 0.6, 0.2],
+  ['salmon', 'Lachs', 'protein', '50 g', 100, 10, 6.5, 0],
+  ['tuna', 'Thunfisch', 'protein', '50 g', 55, 12.5, 0.5, 0],
+
+  ['pasta', 'Nudeln (roh)', 'carbs', '25 g', 89, 3.2, 0.4, 18],
+  ['rice', 'Reis (roh)', 'carbs', '25 g', 88, 1.8, 0.2, 19.5],
+  ['potato', 'Kartoffeln', 'carbs', '100 g', 75, 2, 0.1, 16],
+  ['bread', 'Brot', 'carbs', '1 Scheibe', 95, 3, 0.6, 17],
+  ['roll', 'Brötchen', 'carbs', '1 Stück', 140, 4.5, 0.7, 28],
+  ['pretzel', 'Brezel', 'carbs', '1 Stück', 215, 6, 1.5, 43],
+  ['oats', 'Haferflocken', 'carbs', '10 g', 37, 1.3, 0.7, 5.9],
+  ['granola', 'Granola', 'carbs', '10 g', 45, 1, 1.8, 6],
+  ['muesli', 'Müsli', 'carbs', '10 g', 37, 1, 0.6, 6.5],
+  ['pizza', 'Pizza', 'carbs', '1 Stück (⅛)', 270, 11, 10, 33],
+  ['fries', 'Pommes', 'carbs', '50 g', 145, 1.7, 7, 18],
+  ['maultaschen', 'Maultasche', 'carbs', '1 Stück', 105, 4.5, 3.5, 13],
+  ['potato_salad', 'Kartoffelsalat', 'carbs', '50 g', 80, 1, 5, 7],
+  ['doener', 'Döner / Dürüm', 'carbs', '1 Stück', 650, 35, 28, 60],
+
+  ['salad', 'Salat', 'veg', '1 Schale (50 g)', 8, 0.6, 0.1, 1],
+  ['berries', 'Beeren', 'veg', '50 g', 22, 0.5, 0.2, 4],
+  ['fruit', 'Obst', 'veg', '1 Stück', 60, 0.4, 0.2, 13],
+  ['avocado', 'Avocado', 'veg', '½ Stück', 112, 1.4, 10, 1.5],
+  ['tomato', 'Tomaten', 'veg', '50 g', 9, 0.5, 0.1, 1.5],
+  ['zucchini', 'Zucchini', 'veg', '100 g', 19, 1.5, 0.3, 2],
+  ['veggies', 'Gemüse gemischt', 'veg', '100 g', 35, 2, 0.3, 5],
+  ['mushrooms', 'Pilze', 'veg', '50 g', 11, 1.5, 0.2, 0.3],
+  ['broccoli', 'Brokkoli', 'veg', '100 g', 34, 3, 0.4, 2.7],
+  ['carrot', 'Karotte', 'veg', '1 Stück', 22, 0.5, 0.1, 4.5],
+  ['spinach', 'Spinat', 'veg', '50 g', 12, 1.4, 0.2, 0.3],
+  ['cucumber', 'Gurke', 'veg', '100 g', 15, 0.6, 0.2, 2],
+
+  ['chia', 'Chia', 'fat', '1 TL (5 g)', 25, 0.8, 1.5, 0.4],
+  ['linseed', 'Leinsamen', 'fat', '1 TL (5 g)', 27, 1, 2.1, 0.1],
+  ['nuts', 'Nüsse', 'fat', '10 g', 63, 1.8, 5.7, 1],
+  ['dark_choc', 'Dunkle Schokolade 90 %', 'fat', '1 Stück (10 g)', 59, 1, 5.5, 1.4],
+  ['peanut_butter', 'Erdnussmus', 'fat', '10 g', 62, 2.6, 5, 1.2],
+  ['olive_oil', 'Olivenöl', 'fat', '1 EL', 88, 0, 10, 0],
+  ['butter', 'Butter', 'fat', '10 g', 74, 0.1, 8.3, 0.1],
+  ['milk', 'Milch', 'fat', '100 ml', 64, 3.4, 3.5, 4.8],
+  ['almond_milk', 'Mandelmilch', 'fat', '100 ml', 15, 0.5, 1.1, 0.3],
+  ['cream', 'Sahne', 'fat', '20 ml', 60, 0.5, 6, 0.7],
+  ['sauce', 'Dip / Sauce', 'fat', '1 EL', 45, 0.2, 4, 2],
+
+  ['ice_cream', 'Eis', 'sweet', '1 Kugel', 120, 2, 6, 15, 'sweets'],
+  ['cake', 'Kuchen / Gebäck', 'sweet', '1 Stück', 350, 5, 18, 42, 'sweets'],
+  ['gummies', 'Gummibärchen', 'sweet', '10 g', 34, 0.7, 0, 7.7, 'sweets'],
+  ['cookie', 'Keks', 'sweet', '1 Stück', 48, 0.6, 2, 7, 'sweets'],
+  ['chocolate', 'Schokolade', 'sweet', '1 Riegel (10 g)', 54, 0.8, 3.2, 5.6, 'sweets'],
+  ['cola', 'Cola / Softdrink', 'sweet', '250 ml', 105, 0, 0, 26, 'sweets'],
+  ['cappuccino', 'Cappuccino', 'sweet', '1 Tasse', 60, 3, 3, 5],
+  ['beer', 'Bier', 'sweet', '0,33 l', 140, 1.5, 0, 10, 'alcohol'],
+  ['wine', 'Wein / Aperol', 'sweet', '1 Glas', 150, 0, 0, 5, 'alcohol'],
+].map(([id, name, cat, unit, kcal, protein, fat, carbs, counter]) => ({ id, name, cat, unit, kcal, protein, fat, carbs, ...(counter ? { counter } : {}), active: true }));
+
+const macrosOf = (x) => Object.fromEntries(MACROS.map((k) => [k, Number(x && x[k]) || 0]));
+
+/** Nährwerte eines Rezepts: feste Werte oder Summe seiner Lebensmittel. */
+function recipeMacros(r) {
+  if (!r.items) return macrosOf(r);
+  const sum = macrosOf({});
+  for (const [id, n] of Object.entries(r.items)) {
+    const f = config.foods.find((x) => x.id === id);
+    if (f) for (const k of MACROS) sum[k] += (f[k] || 0) * n;
   }
   return sum;
 }
 
-function changeMeal(date, meal, delta) {
+/** Tagessummen: Lebensmittel, Rezepte, freie Einträge und ältere Mahlzeiten-Einträge. */
+function nutritionOf(day) {
+  const sum = { kcal: 0, protein: 0, fat: 0, carbs: 0, any: false };
+  const add = (m, n = 1) => { for (const k of MACROS) sum[k] += (Number(m[k]) || 0) * n; sum.any = true; };
+  const snap = day.foodSnap || {};
+  for (const [id, n] of Object.entries(day.foods || {})) {
+    add(snap[`f:${id}`] || config.foods.find((x) => x.id === id) || {}, n);
+  }
+  for (const [id, n] of Object.entries(day.recipes || {})) {
+    const r = config.recipes.find((x) => x.id === id);
+    add(snap[`r:${id}`] || (r ? recipeMacros(r) : {}), n);
+  }
+  for (const f of day.food || []) add(f);
+  // Ältere Einträge (Mahlzeiten mit Snapshot aus früheren Versionen)
+  const oldSnap = day.mealsSnapshot || [];
+  for (const e of day.meals || []) {
+    if (!e.count) continue;
+    add(oldSnap.find((s) => s.id === e.id) || config.meals.find((m) => m.id === e.id) || {}, e.count);
+  }
+  return sum;
+}
+
+/** Lebensmittel (f) oder Rezept (r) zählen; Werte beim ersten Eintrag des Tages festhalten. */
+function changeFood(date, kind, item, delta) {
   haptic();
   updateDay(date, (d) => {
-    const meals = (d.meals || []).map((e) => ({ ...e }));
-    const e = meals.find((x) => x.id === meal.id);
-    if (e) e.count = Math.max(0, e.count + delta); else if (delta > 0) meals.push({ id: meal.id, count: delta });
-    d.meals = meals.filter((x) => x.count > 0);
-    // Snapshot: bestehende Werte behalten, neue Mahlzeiten mit den aktuellen Makros.
-    const old = d.mealsSnapshot || [];
-    d.mealsSnapshot = d.meals.map((x) => {
-      const prev = old.find((s) => s.id === x.id);
-      const src = prev || config.meals.find((m) => m.id === x.id) || {};
-      return { id: x.id, count: x.count, kcal: src.kcal || 0, protein: src.protein || 0, carbs: src.carbs || 0 };
-    });
-    if (!d.meals.length) delete d.mealsSnapshot;
+    const key = kind === 'f' ? 'foods' : 'recipes';
+    const map = { ...(d[key] || {}) };
+    const before = map[item.id] || 0;
+    const n = Math.max(0, before + delta);
+    if (n) map[item.id] = n; else delete map[item.id];
+    d[key] = map;
+    if (!Object.keys(map).length) delete d[key];
+    const snap = { ...(d.foodSnap || {}) };
+    if (n && !snap[`${kind}:${item.id}`]) snap[`${kind}:${item.id}`] = kind === 'f' ? macrosOf(item) : recipeMacros(item);
+    if (!n) delete snap[`${kind}:${item.id}`];
+    d.foodSnap = snap;
+    if (!Object.keys(snap).length) delete d.foodSnap;
+    // Verknüpfter Negativ-Zähler (z. B. Eis → Süßes, Bier → Alkohol)
+    const counter = kind === 'f' && item.counter && config.counters.find((c) => c.id === item.counter && isActive(c));
+    if (counter && n !== before) {
+      const counters = { ...(d.counters || {}) };
+      const c = Math.max(0, (counters[counter.id] || 0) + (n - before));
+      if (c) counters[counter.id] = c; else delete counters[counter.id];
+      d.counters = counters;
+      if (!Object.keys(counters).length) delete d.counters;
+    }
   });
   softRender();
 }
 
-/** Wie oft jede Mahlzeit in den gespeicherten Tagen vorkommt – für die Reihenfolge der Schnellauswahl. */
-function mealUsage() {
+/** Wie oft jedes Lebensmittel / Rezept in den gespeicherten Tagen vorkommt – für die Reihenfolge. */
+function foodUsage() {
   const use = {};
-  for (const d of cachedDates('days')) for (const e of (getDay(d) || {}).meals || []) use[e.id] = (use[e.id] || 0) + (e.count || 0);
+  for (const d of cachedDates('days')) {
+    const day = getDay(d) || {};
+    for (const [id, n] of Object.entries(day.foods || {})) use[`f:${id}`] = (use[`f:${id}`] || 0) + n;
+    for (const [id, n] of Object.entries(day.recipes || {})) use[`r:${id}`] = (use[`r:${id}`] || 0) + n;
+  }
   return use;
 }
 
-/** Eintrag aus dem Formular: mit Namen → Mahlzeit merken und zählen; ohne Namen → freier Eintrag. */
-function addFood(date, { name, kcal, protein, carbs }) {
-  const macros = { kcal: kcal || 0, protein: protein || 0, carbs: carbs || 0 };
-  if (name) {
-    let meal = config.meals.find((m) => m.name.toLowerCase() === name.toLowerCase());
-    if (!meal) {
-      meal = { id: slugId(name, config.meals), name, ...macros, active: true };
-      config.meals.push(meal);
-      saveConfig('config: add meal');
-    } else if (kcal != null || protein != null || carbs != null) {
-      Object.assign(meal, macros, { active: true });
-      saveConfig('config: update meal');
-    }
-    changeMeal(date, meal, 1);
-  } else {
-    haptic();
-    updateDay(date, (d) => { d.food = [...(d.food || []), macros]; });
-    softRender();
-  }
+const fmtMacro = (m) => `${fmtNum(m.kcal)} kcal · P ${fmtNum(m.protein)} · F ${fmtNum(m.fat)} · KH ${fmtNum(m.carbs)}`;
+
+/** Chip: Tap = +1, langer Druck = −1. */
+function foodChip(label, sub, n, onAdd, onRemove) {
+  const btn = h('button', { type: 'button', class: `food-chip${n ? ' on' : ''}` },
+    h('span', {}, label), sub ? h('small', {}, sub) : null, n ? h('b', {}, n) : null);
+  pressable(btn, onAdd, () => { if (n) onRemove(); });
+  return btn;
 }
 
-function mealsBlock(date, day) {
-  const counts = Object.fromEntries((day.meals || []).map((e) => [e.id, e.count]));
-  const use = mealUsage();
-  const presets = config.meals.filter(isActive).sort((a, b) => (use[b.id] || 0) - (use[a.id] || 0)).slice(0, 12);
-  const eaten = (day.meals || []).map((e) => ({ e, m: config.meals.find((x) => x.id === e.id) || { id: e.id, name: e.id } }));
+function foodBlock(date, day) {
   const sum = nutritionOf(day);
   const t = config.targets.daily;
-  const part = (label, key, unit = '') => h('span', {},
-    `${label} `, h('b', {}, fmtNum(sum[key]), unit),
-    t[key] != null ? h('span', { class: 'of' }, ` / ${fmtNum(t[key])}${unit}`) : null);
-  const macroText = (x) => [x.kcal ? `${fmtNum(x.kcal)} kcal` : null, x.protein ? `${fmtNum(x.protein)} g P` : null, x.carbs ? `${fmtNum(x.carbs)} g KH` : null].filter(Boolean).join(' · ') || 'ohne Nährwerte';
+  const use = foodUsage();
+  const byUse = (kind) => (a, b) => (use[`${kind}:${b.id}`] || 0) - (use[`${kind}:${a.id}`] || 0);
 
-  // Formular
-  const f = {
-    name: h('input', { type: 'text', placeholder: 'Name (optional – wird gemerkt)', autocapitalize: 'sentences', enterkeyhint: 'next' }),
-    kcal: h('input', { type: 'text', inputmode: 'decimal', placeholder: 'kcal' }),
-    protein: h('input', { type: 'text', inputmode: 'decimal', placeholder: 'Protein g' }),
-    carbs: h('input', { type: 'text', inputmode: 'decimal', placeholder: 'KH g' }),
+  // Tagessumme gegen Ziele (Carbs = Obergrenze)
+  const cell = (label, key, unit, isMax) => {
+    const target = t[key];
+    const over = isMax && target != null && sum[key] > target;
+    return h('div', { class: `macro${over ? ' over' : ''}` },
+      h('b', {}, fmtNum(sum[key]), h('small', {}, unit)),
+      h('span', {}, label, target != null ? ` ${isMax ? 'max. ' : '/ '}${fmtNum(target)}` : ''));
   };
-  const submit = () => {
-    const entry = { name: f.name.value.trim(), kcal: parseNum(f.kcal.value), protein: parseNum(f.protein.value), carbs: parseNum(f.carbs.value) };
-    if (!entry.name && entry.kcal == null && entry.protein == null && entry.carbs == null) { f.name.focus(); return; }
+
+  // Heute gegessen
+  const eaten = [
+    ...Object.entries(day.recipes || {}).map(([id, n]) => ({ kind: 'r', n, item: config.recipes.find((x) => x.id === id) || { id, name: id } })),
+    ...Object.entries(day.foods || {}).map(([id, n]) => ({ kind: 'f', n, item: config.foods.find((x) => x.id === id) || { id, name: id } })),
+  ];
+  const legacy = (day.meals || []).filter((e) => e.count).map((e) => ({ e, m: config.meals.find((x) => x.id === e.id) || { name: e.id } }));
+  const unitMacros = ({ kind, item }) => (day.foodSnap || {})[`${kind}:${item.id}`] || (kind === 'f' ? macrosOf(item) : recipeMacros(item));
+
+  // Chips je Kategorie
+  const recipes = config.recipes.filter(isActive).sort(byUse('r'));
+  const count = (kind, id) => ((kind === 'f' ? day.foods : day.recipes) || {})[id] || 0;
+  const catBlock = (cat, label) => {
+    const all = config.foods.filter((f) => isActive(f) && f.cat === cat).sort(byUse('f'));
+    if (!all.length) return null;
+    const open = todayUi.moreCats.has(cat);
+    const shown = open ? all : all.slice(0, 8);
+    return [
+      h('p', { class: 'subhead' }, label),
+      h('div', { class: 'food-chips' },
+        shown.map((f) => foodChip(f.name, f.unit, count('f', f.id), () => changeFood(date, 'f', f, 1), () => changeFood(date, 'f', f, -1))),
+        all.length > 8 ? h('button', {
+          type: 'button', class: 'food-more',
+          onclick: () => { if (open) todayUi.moreCats.delete(cat); else todayUi.moreCats.add(cat); softRender(); },
+        }, open ? 'weniger' : `+${all.length - 8} mehr`) : null),
+    ];
+  };
+
+  // Freier Eintrag (nur Nährwerte)
+  const f = Object.fromEntries(MACROS.map((k) => [k, h('input', { type: 'text', inputmode: 'decimal', placeholder: { kcal: 'kcal', protein: 'Protein g', fat: 'Fett g', carbs: 'Carbs g' }[k] })]));
+  const submitFree = () => {
+    const entry = Object.fromEntries(MACROS.map((k) => [k, parseNum(f[k].value) || 0]));
+    if (!MACROS.some((k) => entry[k])) { f.kcal.focus(); return; }
     todayUi.foodOpen = false;
     if (document.activeElement) document.activeElement.blur();
-    addFood(date, entry);
+    haptic();
+    updateDay(date, (d) => { d.food = [...(d.food || []), entry]; });
+    softRender();
   };
 
   return h('div', { class: 'block' },
-    eaten.length || (day.food || []).length ? h('div', { class: 'food-list' },
-      eaten.map(({ e, m }) => h('div', { class: 'food-row' },
-        h('span', { class: 'food-name' }, m.name, h('small', {}, macroText(m))),
-        h('span', { class: 'count' }, `${e.count}×`),
-        h('button', { type: 'button', class: 'icon-btn', 'aria-label': `${m.name} verringern`, onclick: () => changeMeal(date, m, -1) }, '−'),
-        h('button', { type: 'button', class: 'icon-btn', 'aria-label': `${m.name} erhöhen`, onclick: () => changeMeal(date, m, 1) }, '+'))),
-      (day.food || []).map((x, i) => h('div', { class: 'food-row' },
-        h('span', { class: 'food-name' }, 'Eintrag', h('small', {}, macroText(x))),
-        h('button', {
-          type: 'button', class: 'icon-btn', 'aria-label': 'Entfernen',
-          onclick: () => { updateDay(date, (d) => { d.food = (d.food || []).filter((_, j) => j !== i); if (!d.food.length) delete d.food; }); softRender(); },
-        }, '×')))) : null,
+    h('div', { class: 'macros' }, cell('kcal', 'kcal', '', false), cell('Protein', 'protein', ' g', false), cell('Fett', 'fat', ' g', false), cell('Carbs', 'carbs', ' g', true)),
 
-    presets.length ? h('div', { class: 'chips quick' }, presets.map((m) => h('button', {
-      type: 'button', class: `chip-btn${counts[m.id] ? ' on' : ''}`, onclick: () => changeMeal(date, m, 1),
-    }, m.name, m.kcal ? h('small', {}, ` ${fmtNum(m.kcal)}`) : null))) : null,
+    eaten.length || legacy.length || (day.food || []).length ? [
+      h('p', { class: 'subhead' }, 'Heute gegessen'),
+      h('div', { class: 'food-list' },
+        eaten.map((x) => {
+          const m = unitMacros(x);
+          return h('div', { class: 'food-row' },
+            h('span', { class: 'food-name' }, `${x.n}× ${x.item.name}`,
+              h('small', {}, `${x.item.unit ? `${x.item.unit} · ` : ''}${fmtNum(m.kcal * x.n)} kcal · KH ${fmtNum(m.carbs * x.n)} g`)),
+            h('button', { type: 'button', class: 'icon-btn', 'aria-label': `${x.item.name} verringern`, onclick: () => changeFood(date, x.kind, x.item, -1) }, '−'),
+            h('button', { type: 'button', class: 'icon-btn', 'aria-label': `${x.item.name} erhöhen`, onclick: () => changeFood(date, x.kind, x.item, 1) }, '+'));
+        }),
+        legacy.map(({ e, m }) => h('div', { class: 'food-row' }, h('span', { class: 'food-name' }, `${e.count}× ${m.name}`, h('small', {}, 'früherer Eintrag')))),
+        (day.food || []).map((x, i) => h('div', { class: 'food-row' },
+          h('span', { class: 'food-name' }, 'Nährwerte', h('small', {}, fmtMacro(macrosOf(x)))),
+          h('button', {
+            type: 'button', class: 'icon-btn', 'aria-label': 'Entfernen',
+            onclick: () => { updateDay(date, (d) => { d.food = (d.food || []).filter((_, j) => j !== i); if (!d.food.length) delete d.food; }); softRender(); },
+          }, '×')))),
+    ] : null,
+
+    recipes.length ? [h('p', { class: 'subhead' }, 'Rezepte'), h('div', { class: 'food-chips' },
+      recipes.map((r) => foodChip(r.name, `${fmtNum(recipeMacros(r).kcal)} kcal`, count('r', r.id), () => changeFood(date, 'r', r, 1), () => changeFood(date, 'r', r, -1))))] : null,
+    Object.entries(FOOD_CATS).map(([cat, label]) => catBlock(cat, label)),
 
     todayUi.foodOpen
-      ? h('div', { class: 'food-form' }, f.name, h('div', { class: 'food-macros' }, f.kcal, f.protein, f.carbs),
+      ? h('div', { class: 'food-form' },
+        h('div', { class: 'food-macros four' }, MACROS.map((k) => f[k])),
         h('div', { class: 'btn-row' },
           h('button', { type: 'button', class: 'btn', onclick: () => { todayUi.foodOpen = false; softRender(); } }, 'Abbrechen'),
-          h('button', { type: 'button', class: 'btn primary', onclick: submit }, 'Hinzufügen')))
-      : h('button', { type: 'button', class: 'btn block add-food', onclick: () => { todayUi.foodOpen = true; softRender(); setTimeout(() => { const i = document.querySelector('.food-form input'); if (i) i.focus(); }, 50); } }, '+ Eintragen'),
-
-    h('div', { class: 'sumline' }, part('', 'kcal', ' kcal'), part('P', 'protein', ' g'), part('KH', 'carbs', ' g')));
+          h('button', { type: 'button', class: 'btn primary', onclick: submitFree }, 'Hinzufügen')))
+      : h('p', { class: 'food-links' },
+        h('button', { type: 'button', class: 'link', onclick: () => { todayUi.foodOpen = true; softRender(); setTimeout(() => { const i = document.querySelector('.food-form input'); if (i) i.focus(); }, 50); } }, 'Nur Nährwerte eintragen'),
+        ' · ',
+        h('button', { type: 'button', class: 'link', onclick: () => { setupUi.focus = 'foods'; setTab('setup'); } }, 'Lebensmittel & Rezepte bearbeiten')));
 }
 
 function metricBlock(m, date, slot) {
@@ -1660,7 +1862,7 @@ function viewToday() {
           h('div', { class: 'tiles compact spaced' }, list.map((x) => boolTile(x, date, null, true))),
         ]),
       ]),
-      section('food', 'Ernährung', { text: nutrition.any ? `${fmtNum(nutrition.kcal)} kcal` : '–' }, mealsBlock(date, day)),
+      section('food', 'Ernährung', { text: nutrition.any ? `${fmtNum(nutrition.kcal)} kcal · KH ${fmtNum(nutrition.carbs)} g` : '–' }, foodBlock(date, day)),
       section('training', 'Training', { text: trainingSum }, trainingBlock(date, day)),
       section('mood', 'Befinden', countSum('mood'), moods.map((m) => metricBlock(m, date))),
       section('neg', 'Negatives', { text: (() => { const n = Object.values(day.counters || {}).reduce((a, x) => a + x, 0); return n ? `${n}×` : 'keine'; })() }, counterBlock(date, day)),
@@ -1990,6 +2192,20 @@ function insights(dates) {
     ...config.counters.filter(isActive).map((c) => ({ label: c.name, negative: true, test: (d) => { const day = getDay(d); return day ? (((day.counters || {})[c.id] || 0) > 0) : null; } })),
     { label: 'Training', test: (d) => (getDay(d) || getHealth(d) ? trainingFor(d).length > 0 : null) },
   ];
+  // Viele Carbs (über dem Median der Tage mit Ernährungseinträgen)
+  const carbDays = days.map((d) => nutritionOf(Object.assign(emptyDay(d), getDay(d) || {}))).filter((n) => n.any).map((n) => n.carbs).sort((a, b) => a - b);
+  if (carbDays.length >= 8) {
+    const median = carbDays[Math.floor(carbDays.length / 2)];
+    factors.push({ label: `mehr als ${fmtNum(median)} g Carbs`, test: (d) => { const n = nutritionOf(Object.assign(emptyDay(d), getDay(d) || {})); return n.any ? n.carbs > median : null; } });
+  }
+  // Häufige Lebensmittel (an mindestens 6 Tagen gegessen)
+  const foodDays = {};
+  for (const d of days) for (const id of Object.keys((getDay(d) || {}).foods || {})) foodDays[id] = (foodDays[id] || 0) + 1;
+  for (const [id, n] of Object.entries(foodDays)) {
+    const food = config.foods.find((f) => f.id === id);
+    if (!food || n < 6 || food.counter) continue;
+    factors.push({ label: food.name, test: (d) => { const day = getDay(d); if (!day) return null; const any = Object.keys(day.foods || {}).length > 0; return any ? ((day.foods || {})[id] || 0) > 0 : null; } });
+  }
   // Gut geschlafen (Nacht vor dem Tag, über dem Median) → Wirkung auf den Tag
   const sleeps = days.map((d) => (getHealth(d) || {}).sleepMin).filter((v) => v != null).sort((a, b) => a - b);
   if (sleeps.length >= 8) {
@@ -2082,6 +2298,13 @@ function viewWeek() {
   const nutriRows = [
     t.kcal ? goalRow('Kalorien Ø', fed.length ? `${fmtNum(avg(fed.map((n) => n.kcal)))} / ${fmtNum(t.kcal)} kcal` : '–', fed.length ? Math.min(1, avg(fed.map((n) => n.kcal)) / t.kcal) : 0) : null,
     t.protein ? goalRow('Protein Ø', fed.length ? `${fmtNum(avg(fed.map((n) => n.protein)))} / ${fmtNum(t.protein)} g` : '–', fed.length ? Math.min(1, avg(fed.map((n) => n.protein)) / t.protein) : 0) : null,
+    t.fat ? goalRow('Fett Ø', fed.length ? `${fmtNum(avg(fed.map((n) => n.fat)))} / ${fmtNum(t.fat)} g` : '–', fed.length ? Math.min(1, avg(fed.map((n) => n.fat)) / t.fat) : 0) : null,
+    t.carbs ? (() => {
+      const c = fed.length ? avg(fed.map((n) => n.carbs)) : null;
+      const okDays = fed.filter((n) => n.carbs <= t.carbs).length;
+      return goalRow(`Carbs Ø (max. ${fmtNum(t.carbs)} g)`, c != null ? `${fmtNum(c)} g · ${okDays}/${fed.length} Tage im Limit` : '–',
+        c != null ? Math.min(1, c / t.carbs) : 0, { reached: c != null && c <= t.carbs, over: c != null && c > t.carbs });
+    })() : null,
   ].filter(Boolean);
   const steps = healthAvg('steps', dates), sleep = healthAvg('sleepMin', dates);
   const healthRows = [
@@ -2140,7 +2363,8 @@ function viewWeek() {
   if (rhr != null) kpis.push(kpi('Ruhepuls Ø', `${fmtNum(rhr)} bpm`, null, sparkline([history.map((w) => healthAvg('restingHr', w))])));
   if (hrv != null) kpis.push(kpi('HRV Ø', `${fmtNum(hrv)} ms`, null, sparkline([history.map((w) => healthAvg('hrv', w))])));
   kpis.push(kpi('Ernährung Ø', fed.length ? `${fmtNum(avg(fed.map((n) => n.kcal)))} kcal` : '–',
-    fed.length ? `${fmtNum(avg(fed.map((n) => n.protein)))} g Protein · ${fed.length} Tage` : null));
+    fed.length ? `P ${fmtNum(avg(fed.map((n) => n.protein)))} · F ${fmtNum(avg(fed.map((n) => n.fat)))} · KH ${fmtNum(avg(fed.map((n) => n.carbs)))} g · ${fed.length} Tage` : null,
+    sparkline([history.map((w) => { const x = countedDays(w).map(nutritionOf).filter((n) => n.any); return x.length ? avg(x.map((n) => n.carbs)) : null; })])));
   for (const c of config.counters.filter(isActive)) {
     const ist = counterSum(c, dates);
     kpis.push(kpi(c.name, `${ist}×`, counted ? `${fmtNum(ist / counted * 7, 1)}× pro Woche` : null, sparkline([history.map((w) => counterSum(c, w))])));
@@ -2302,8 +2526,10 @@ function exportCsv() {
     for (const t of d.training || []) add('training', t.id, t.min ?? '');
     for (const m of d.meals || []) add('meal', m.id, m.count);
     for (const [k, v] of Object.entries(d.counters || {})) add('counter', k, v);
+    for (const [k, v] of Object.entries(d.foods || {})) add('food', k, v);
+    for (const [k, v] of Object.entries(d.recipes || {})) add('recipe', k, v);
     const n = nutritionOf(d);
-    if (n.any) { add('nutrition', 'kcal', n.kcal); add('nutrition', 'protein', n.protein); add('nutrition', 'carbs', n.carbs); }
+    if (n.any) { add('nutrition', 'kcal', Math.round(n.kcal)); add('nutrition', 'protein', Math.round(n.protein)); add('nutrition', 'fat', Math.round(n.fat)); add('nutrition', 'carbs', Math.round(n.carbs)); }
   }
   for (const date of cachedDates('health')) {
     const hl = getHealth(date);
@@ -2338,7 +2564,7 @@ function exportForClaude(weeks = 8) {
   for (const m of metrics) cols.push(...(m.type === 'bloodpressure' ? [`${m.id}_sys`, `${m.id}_dia`] : [m.id]));
   const counters = config.counters.filter(isActive);
   cols.push(...counters.map((c) => c.id));
-  cols.push('kcal', 'protein', ...training.map((t) => `${t.id}${t.type === 'minutes' ? '_min' : ''}`),
+  cols.push('kcal', 'protein', 'fat', 'carbs', 'foods', ...training.map((t) => `${t.id}${t.type === 'minutes' ? '_min' : ''}`),
     'steps', 'sleep_min', 'deep_min', 'rem_min', 'resting_hr', 'hrv_ms');
   const rows = [cols.join(',')];
   for (const d of dates) {
@@ -2353,7 +2579,9 @@ function exportForClaude(weeks = 8) {
       if (m.type === 'bloodpressure') r.push(v ? v.sys : '', v ? v.dia : ''); else r.push(v ?? '');
     }
     r.push(...counters.map((c) => (getDay(d) ? ((day.counters || {})[c.id] || 0) : '')));
-    r.push(n.any ? Math.round(n.kcal) : '', n.any ? Math.round(n.protein) : '',
+    const foods = [...Object.entries(day.recipes || {}).map(([id, k]) => `${(config.recipes.find((x) => x.id === id) || { name: id }).name} ${k}x`),
+      ...Object.entries(day.foods || {}).map(([id, k]) => `${(config.foods.find((x) => x.id === id) || { name: id }).name} ${k}x`)].join('; ');
+    r.push(n.any ? Math.round(n.kcal) : '', n.any ? Math.round(n.protein) : '', n.any ? Math.round(n.fat) : '', n.any ? Math.round(n.carbs) : '', foods ? `"${foods.replace(/"/g, '')}"` : '',
       ...training.map((t) => { const e = tr.filter((x) => x.id === t.id); return e.length ? (t.type === 'minutes' ? e.reduce((a, x) => a + (x.min || 0), 0) : e.length) : ''; }),
       hl.steps ?? '', hl.sleepMin ?? '', hl.deepMin ?? '', hl.remMin ?? '', hl.restingHr ?? '', hl.hrv ?? '');
     rows.push(r.join(','));
@@ -2364,6 +2592,7 @@ function exportForClaude(weeks = 8) {
     ...counters.map((c) => `${c.id} = ${c.name} (Anzahl pro Tag, negativ – weniger ist besser)`),
     ...training.map((t) => `${t.id} = ${t.name} (${t.type === 'minutes' ? 'Minuten' : 'Einheiten'})`),
     'steps, sleep_min, deep_min, rem_min, resting_hr, hrv_ms = aus Apple Health (Schlaf = Nacht vor dem Datum)',
+    'kcal, protein, fat, carbs = Tagessumme (g); foods = gegessene Lebensmittel/Rezepte mit Anzahl Einheiten; Ziel: wenig Carbs',
     'pause = Pause-Tag (krank, Reise …) – bei Auswertungen ausklammern',
   ];
   const goals = [
@@ -2478,6 +2707,11 @@ function setTab(tab) {
   LS.set('la.ui.tab', tab);
   window.scrollTo(0, 0);
   render();
+  if (tab === 'setup' && setupUi.focus) {
+    const el = document.getElementById(`setup-${setupUi.focus}`);
+    if (el) el.scrollIntoView();
+    setupUi.focus = null;
+  }
   if (tab === 'week') ensureWeekData();
 }
 

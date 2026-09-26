@@ -464,3 +464,32 @@ a { color: var(--accent); }
 .chart .raw.second, .chart .dot.second { fill: var(--muted); }
 .chart .line.second { stroke: var(--muted); }
 .goal.over .bar > i { background: var(--danger); }
+
+/* Ernährung */
+.macros { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.macro { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 8px; text-align: center; }
+.macro b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+.macro b small { font-size: 12px; font-weight: 500; color: var(--muted); }
+.macro span { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.macro.over { border-color: var(--danger); }
+.macro.over b { color: var(--danger); }
+.food-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.food-chip {
+  position: relative; display: inline-flex; flex-direction: column; align-items: flex-start; justify-content: center;
+  min-height: 44px; padding: 4px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface);
+  font-size: 14px; text-align: left; line-height: 1.2;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: manipulation;
+}
+.food-chip small { font-size: 11px; color: var(--muted); }
+.food-chip.on { border-color: var(--accent); }
+.food-chip b {
+  position: absolute; top: -7px; right: -6px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px;
+  background: var(--accent); color: var(--on-accent); font-size: 12px; line-height: 20px; text-align: center;
+}
+.food-more { min-height: 44px; padding: 0 12px; border: 0; background: transparent; color: var(--accent); font-size: 14px; }
+.food-macros.four { grid-template-columns: repeat(4, 1fr); }
+.food-links { font-size: 13px; color: var(--muted); margin-top: 14px; }
+.link { border: 0; background: transparent; color: var(--accent); padding: 6px 0; font-size: 13px; }
+details.cat { border: 1px solid var(--line); border-radius: var(--radius); margin: 8px 0; background: var(--surface); }
+details.cat summary { padding: 12px 14px; cursor: pointer; font-weight: 550; }
+details.cat .rows { padding: 0 8px 8px; }
