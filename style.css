@@ -403,3 +403,30 @@ a { color: var(--accent); }
 .food-form { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
 .food-macros { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .food-form .btn-row { margin-top: 0; }
+
+/* Auswertung */
+.level-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin: 8px 0 4px; }
+.level-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+.level-num { font-size: 24px; font-weight: 700; letter-spacing: -.01em; }
+.level-score { text-align: right; }
+.level-score b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+.level-score span { font-size: 12px; color: var(--muted); }
+.attrs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; }
+.attr .goal-top { font-size: 13px; margin-bottom: 4px; }
+.bar.thin { height: 5px; }
+.goal.reached .goal-top span:first-child::after { content: " ✓"; color: var(--accent); }
+.goal:not(.reached) .bar > i { background: color-mix(in srgb, var(--accent) 55%, var(--faint)); }
+.goal-sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+.subhead.first { margin-top: 2px; }
+.chart { display: block; width: 100%; height: auto; overflow: visible; margin-top: 4px; }
+.chart .lbl { font-size: 10px; fill: var(--muted); text-anchor: middle; }
+.chart .val { font-size: 9px; fill: var(--muted); text-anchor: middle; font-variant-numeric: tabular-nums; }
+.chart .target { stroke: var(--muted); stroke-dasharray: 3 3; stroke-width: 1; }
+.chart .line { fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linejoin: round; }
+.chart .dot { fill: var(--accent); }
+.s-deep { fill: var(--accent); background: var(--accent); }
+.s-rem { fill: var(--accent); fill-opacity: .62; background: color-mix(in srgb, var(--accent) 62%, transparent); }
+.s-core { fill: var(--accent); fill-opacity: .3; background: color-mix(in srgb, var(--accent) 30%, transparent); }
+.s-other { fill: var(--muted); fill-opacity: .35; background: color-mix(in srgb, var(--muted) 35%, transparent); }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }

@@ -117,7 +117,7 @@ const DEFAULT_CONFIG = {
     evening: { start: '14:00', end: '05:59' },
   },
   targets: {
-    daily: { kcal: null, protein: null, carbs: null },
+    daily: { kcal: null, protein: null, carbs: null, steps: 8000, sleepH: 7.5 },
     weekly: { zone2_min: 60, strength_sessions: 3, hit_sessions: 1, sauna_sessions: 1 },
   },
   habits: [
@@ -158,7 +158,7 @@ function normalizeConfig(c) {
   cfg.user = Object.assign({ name: '' }, cfg.user);
   cfg.windows = Object.assign(clone(DEFAULT_CONFIG.windows), cfg.windows);
   cfg.targets = Object.assign({ daily: {}, weekly: {} }, cfg.targets);
-  cfg.targets.daily = Object.assign({ kcal: null, protein: null, carbs: null }, cfg.targets.daily);
+  cfg.targets.daily = Object.assign({ kcal: null, protein: null, carbs: null, steps: null, sleepH: null }, cfg.targets.daily);
   cfg.targets.weekly = Object.assign({}, cfg.targets.weekly);
   for (const k of ['habits', 'metrics', 'training', 'meals', 'pauseModes']) if (!Array.isArray(cfg[k])) cfg[k] = [];
   cfg.health = Object.assign({ workoutMap: {} }, cfg.health);
@@ -372,23 +372,57 @@ function dedupSteps(raw, date) {
   return { steps: Math.round(total), perSource };
 }
 
-/** Schlafminuten: Vereinigung aller Schlaf-Intervalle (keine Doppelzählung iPhone + Watch). */
-function sleepMinutes(samples, date) {
-  // Nur die Nacht, die am Morgen von date endet: Beginn zwischen 18:00 am Vortag und 12:00.
-  const from = date ? parseYmd(addDays(date, -1)).setHours(18, 0, 0, 0) : -Infinity;
-  const to = date ? parseYmd(date).setHours(12, 0, 0, 0) : Infinity;
-  const iv = samples
-    .filter((s) => !ASLEEP_EXCLUDE.test(s.value || ''))
-    .filter((s) => { const t = Date.parse(s.start); return !Number.isFinite(t) || (t >= from && t < to); })
-    .map((s) => [Date.parse(s.start), Date.parse(s.end)])
-    .filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b) && b > a)
-    .sort((x, y) => x[0] - y[0]);
+/** Gesamtdauer (Minuten) einer Menge von Intervallen [start, ende] ohne Doppelzählung. */
+function unionMinutes(iv) {
   let total = 0, cur = null;
-  for (const [a, b] of iv) {
+  for (const [a, b] of [...iv].sort((x, y) => x[0] - y[0])) {
     if (!cur || a > cur[1]) { if (cur) total += cur[1] - cur[0]; cur = [a, b]; } else cur[1] = Math.max(cur[1], b);
   }
   if (cur) total += cur[1] - cur[0];
-  return iv.length ? Math.round(total / 60000) : null;
+  return Math.round(total / 60000);
+}
+
+/** Schlafphase aus dem (lokalisierten) Wert. */
+function sleepStage(v) {
+  if (/tief|deep/i.test(v)) return 'deep';
+  if (/rem/i.test(v)) return 'rem';
+  if (/kern|core/i.test(v)) return 'core';
+  return 'asleep';
+}
+
+/**
+ * Schlaf der Nacht, die am Morgen von date endet (Beginn zwischen 18:00 am Vortag und 12:00).
+ * Liefern mehrere Quellen (z. B. Oura und Watch), zählt nur die oberste aus dem Setup.
+ */
+function sleepStats(samples, date) {
+  const from = date ? parseYmd(addDays(date, -1)).setHours(18, 0, 0, 0) : -Infinity;
+  const to = date ? parseYmd(date).setHours(12, 0, 0, 0) : Infinity;
+  const asleep = samples
+    .filter((x) => !ASLEEP_EXCLUDE.test(x.value || ''))
+    .map((x) => ({ s: parseHealthTime(x.start), e: parseHealthTime(x.end), stage: sleepStage(x.value || ''), src: (x.source || '').trim() }))
+    .filter((x) => Number.isFinite(x.s) && Number.isFinite(x.e) && x.e > x.s && x.s >= from && x.s < to);
+  if (!asleep.length) return null;
+  const src = [...new Set(asleep.map((x) => x.src))].sort((a, b) => sourceRank(a) - sourceRank(b) || a.localeCompare(b))[0];
+  const mine = asleep.filter((x) => x.src === src);
+  const stage = (k) => { const iv = mine.filter((x) => x.stage === k).map((x) => [x.s, x.e]); return iv.length ? unionMinutes(iv) : null; };
+  return {
+    total: unionMinutes(mine.map((x) => [x.s, x.e])),
+    deep: stage('deep'), rem: stage('rem'), core: stage('core'),
+    source: src, sources: [...new Set(asleep.map((x) => x.src).filter(Boolean))],
+  };
+}
+
+/** Herzwerte (Ruhepuls, HRV) des Tages: Durchschnitt der obersten Quelle, ab 18:00 am Vortag. */
+function heartValue(v, date) {
+  const lines = healthLines(v, ['start', 'value', 'source'])
+    .map((x) => ({ t: parseHealthTime(x.start), v: looseNum(x.value), src: (x.source || '').trim() }))
+    .filter((x) => Number.isFinite(x.t) && x.v != null && x.v > 0);
+  const from = parseYmd(addDays(date, -1)).setHours(18, 0, 0, 0), to = parseYmd(addDays(date, 1)).setHours(0, 0, 0, 0);
+  const inDay = lines.filter((x) => x.t >= from && x.t < to);
+  if (!inDay.length) return { value: null, sources: [] };
+  const sources = [...new Set(inDay.map((x) => x.src))].sort((a, b) => sourceRank(a) - sourceRank(b) || a.localeCompare(b));
+  const mine = inDay.filter((x) => x.src === sources[0]);
+  return { value: Math.round(mine.reduce((a, x) => a + x.v, 0) / mine.length), sources: sources.filter(Boolean) };
 }
 
 const healthCache = new Map();   // path → { sha, parsed }
@@ -400,7 +434,9 @@ function getHealth(date) {
   const hit = healthCache.get(date);
   if (hit && hit.sha === f.sha && hit.raw === f.data) return hit.parsed;
   const raw = f.data;
-  const sleep = healthLines(raw.sleep, ['value', 'start', 'end']);
+  const sleep = healthLines(raw.sleep, ['value', 'start', 'end', 'source']);
+  const sleepInfo = sleepStats(sleep, date);
+  const rhr = heartValue(raw.restingHr, date), hrv = heartValue(raw.hrv, date);
   const workouts = healthLines(raw.workouts, ['type', 'start', 'min'])
     .map((w) => ({ type: String(w.type || '').trim(), start: w.start || null, min: Math.round(looseNum(w.min ?? w.minutes ?? w.duration) || 0) }))
     .filter((w) => w.type);
@@ -422,7 +458,13 @@ function getHealth(date) {
     steps: steps != null && steps > 0 ? Math.round(steps) : null,
     weight: weight != null && weight > 0 ? round(weight, 1) : null,
     stepSources: dedup ? dedup.perSource : null,
-    sleepMin: raw.sleepMin != null ? looseNum(raw.sleepMin) : sleepMinutes(sleep, date),
+    sleepMin: raw.sleepMin != null ? looseNum(raw.sleepMin) : sleepInfo ? sleepInfo.total : null,
+    deepMin: sleepInfo ? sleepInfo.deep : null,
+    remMin: sleepInfo ? sleepInfo.rem : null,
+    coreMin: sleepInfo ? sleepInfo.core : null,
+    restingHr: rhr.value,
+    hrv: hrv.value,
+    sources: [...new Set([...(dedup ? Object.keys(dedup.perSource) : []), ...(sleepInfo ? sleepInfo.sources : []), ...rhr.sources, ...hrv.sources].filter((x) => x && x !== '?'))],
     workouts,
   };
   healthCache.set(date, { sha: f.sha, raw: f.data, parsed });
@@ -966,7 +1008,7 @@ function viewSetup() {
   const healthDates = cachedDates('health');
   const lastHealth = healthDates[healthDates.length - 1];
   // Alle Schritt-Quellen, sortiert nach aktueller Reihenfolge
-  const stepSources = [...new Set(healthDates.flatMap((d) => Object.keys((getHealth(d) || {}).stepSources || {})))]
+  const stepSources = [...new Set(healthDates.flatMap((d) => (getHealth(d) || {}).sources || []))]
     .sort((a, b) => sourceRank(a) - sourceRank(b) || a.localeCompare(b));
   const moveSource = (i, dir) => {
     const list = [...stepSources];
@@ -1023,6 +1065,10 @@ function viewSetup() {
     h('h2', {}, 'Ziele'),
     h('p', { class: 'hint' }, 'Tagesziele Ernährung'),
     h('div', { class: 'pair' }, dailyField('kcal', 'kcal'), dailyField('protein', 'Protein (g)'), dailyField('carbs', 'Carbs (g)')),
+    h('p', { class: 'hint' }, 'Tagesziele Aktivität & Schlaf'),
+    h('div', { class: 'pair' }, dailyField('steps', 'Schritte pro Tag'),
+      h('label', { class: 'field' }, h('span', {}, 'Schlaf pro Nacht (Stunden)'),
+        numEl(c.targets.daily.sleepH, (v) => { c.targets.daily.sleepH = v; commitConfig('targets'); }, { placeholder: 'kein Ziel', decimal: true }))),
     h('p', { class: 'hint' }, 'Wochenziele Training'),
     h('div', { class: 'pair' }, weeklyFields),
 
@@ -1057,7 +1103,7 @@ function viewSetup() {
     h('p', { class: 'hint' }, 'Dann erscheint morgens ein Knopf, der die Daten von gestern überträgt, falls sie noch fehlen.'),
     lastHealth ? healthStatusCard(lastHealth) : h('p', { class: 'hint' }, 'Noch keine Health-Daten empfangen.'),
     stepSources.length > 1 ? [
-      h('p', { class: 'hint' }, 'Reihenfolge der Schritt-Quellen – so wie in der Health-App unter Schritte → Datenquellen und Zugriff. Wo sich Messungen überschneiden, zählt die obere Quelle.'),
+      h('p', { class: 'hint' }, 'Reihenfolge der Quellen – so wie in der Health-App unter „Datenquellen und Zugriff“. Wo sich Messungen überschneiden (Schritte, Schlaf, Herz), zählt die obere Quelle.'),
       h('div', { class: 'rows' }, stepSources.map((src, i) => h('div', { class: 'row' }, h('div', { class: 'row-main' },
         h('span', { style: 'flex:1' }, `${i + 1}. ${src}`),
         h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nach oben', disabled: i === 0, onclick: () => moveSource(i, -1) }, '↑'),
@@ -1546,9 +1592,7 @@ function viewToday() {
   return root;
 }
 
-// ---------- Woche ----------
-
-const weekUi = { offset: 0 };
+// ---------- Auswertung: Grundlagen ----------
 
 const weekStartFor = (offset) => addDays(mondayOf(logicalToday()), -7 * offset);
 const weekDates = (start) => Array.from({ length: 7 }, (_, i) => addDays(start, i));
@@ -1608,44 +1652,214 @@ function kpi(label, value, sub, spark) {
     spark || null);
 }
 
+// ---------- Auswertung: Level ----------
+
+const svgEl = (tag, attrs = {}, ...kids) => {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) el.setAttribute(k, v);
+  for (const k of kids) if (k) el.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  return el;
+};
+
+const ATTRS = { koerper: 'Körper', treibstoff: 'Treibstoff', geist: 'Geist' };
+
+/** Welchem Attribut eine Gewohnheit zählt (Setup-Feld „attr“, sonst nach Name). */
+function habitAttr(hb) {
+  if (hb.attr && ATTRS[hb.attr]) return hb.attr;
+  const t = `${hb.id} ${hb.name} ${hb.group || ''}`;
+  if (/medit|lesen|read|handy|phone|journal|atem|breath|dankbar/i.test(t)) return 'geist';
+  if (/supplement|omega|vitamin|kreatin|creatin|magnes|wasser|water|essen|food|zucker|alkohol/i.test(t)) return 'treibstoff';
+  return 'koerper';
+}
+
+/** Anteil (0–1) erledigter Tage einer Gewohnheit an den gezählten Tagen. */
+function habitRate(hb, dates) {
+  const days = countedDates(dates);
+  if (!days.length) return null;
+  return days.filter((d) => ((getDay(d) || {}).habits || {})[hb.id] === true).length / days.length;
+}
+
+/** Soll/Ist aller Trainingsziele einer Woche. */
+function trainingGoals(dates) {
+  return config.training.filter(isActive).map((t) => {
+    const target = config.targets.weekly[weeklyKey(t)];
+    if (target == null) return null;
+    const entries = countedDates(dates).flatMap((d) => trainingFor(d).filter((e) => e.id === t.id));
+    const ist = t.type === 'minutes' ? entries.reduce((s, e) => s + (e.min || 0), 0) : entries.length;
+    return { t, ist, soll: target, unit: t.type === 'minutes' ? ' min' : '×', rate: target > 0 ? Math.min(1, ist / target) : 1 };
+  }).filter(Boolean);
+}
+
+/** Ernährung: Anteil der Tage mit Einträgen, an denen die Tagesziele erreicht wurden. */
+function nutritionRate(dates) {
+  const t = config.targets.daily;
+  const days = countedDays(dates).map(nutritionOf).filter((n) => n.any);
+  if (!days.length) return null;
+  const checks = days.map((n) => {
+    const ok = [];
+    if (t.kcal) ok.push(n.kcal >= t.kcal * 0.9 && n.kcal <= t.kcal * 1.1);
+    if (t.protein) ok.push(n.protein >= t.protein);
+    if (t.carbs) ok.push(n.carbs <= t.carbs * 1.1);
+    return ok.length ? ok.filter(Boolean).length / ok.length : 1;
+  });
+  return avg(checks);
+}
+
+/**
+ * Wochen-Score (0–100) und Attribute. Pause-Tage zählen nicht; Prio-1-Gewohnheiten doppelt.
+ * Körper = Trainingsziele + Körper-Gewohnheiten, Treibstoff = Ernährungsziele + Supplements usw.,
+ * Geist = Meditation, Lesen usw.
+ */
+function weekScore(dates) {
+  if (!countedDates(dates).length) return null;
+  const parts = { koerper: [], treibstoff: [], geist: [] };   // [wert 0–1, gewicht]
+  for (const g of trainingGoals(dates)) parts.koerper.push([g.rate, 2]);
+  for (const hb of config.habits.filter(isActive)) {
+    const r = habitRate(hb, dates);
+    if (r != null) parts[habitAttr(hb)].push([r, (hb.prio || 1) === 1 ? 2 : 1]);
+  }
+  const n = nutritionRate(dates);
+  if (n != null) parts.treibstoff.push([n, 2]);
+  const attrs = {};
+  for (const [k, list] of Object.entries(parts)) {
+    const w = list.reduce((a, [, x]) => a + x, 0);
+    attrs[k] = w ? Math.round((list.reduce((a, [v, x]) => a + v * x, 0) / w) * 100) : null;
+  }
+  const vals = Object.values(attrs).filter((v) => v != null);
+  return { score: vals.length ? Math.round(avg(vals)) : 0, attrs };
+}
+
+/** Level aus allen abgeschlossenen Wochen: Level L braucht 50·L·(L−1) Punkte (100, 300, 600, …). */
+function levelInfo() {
+  const dates = cachedDates('days');
+  if (!dates.length) return { level: 1, xp: 0, next: 100, prev: 0, weeks: 0 };
+  const thisWeek = mondayOf(logicalToday());
+  let xp = 0, weeks = 0;
+  for (let w = mondayOf(dates[0]); w < thisWeek; w = addDays(w, 7)) {
+    const s = weekScore(weekDates(w));
+    if (s) { xp += s.score; weeks++; }
+  }
+  let level = 1;
+  while (50 * (level + 1) * level <= xp) level++;
+  return { level, xp, prev: 50 * level * (level - 1), next: 50 * (level + 1) * level, weeks };
+}
+
+// ---------- Auswertung: Diagramme ----------
+
+/** Balken „Ist gegenüber Soll“. */
+function goalRow(label, istText, rate, sub) {
+  const pct = Math.max(0, Math.min(100, Math.round((rate || 0) * 100)));
+  return h('div', { class: `goal${rate >= 1 ? ' reached' : ''}` },
+    h('div', { class: 'goal-top' }, h('span', {}, label), h('span', {}, istText)),
+    h('div', { class: 'bar' }, h('i', { style: `width:${pct}%` })),
+    sub ? h('div', { class: 'goal-sub' }, sub) : null);
+}
+
+/** Gestapelte Schlafbalken pro Nacht (Tief, REM, Kern, sonstiger Schlaf). */
+function sleepChart(dates) {
+  const nights = dates.map((d) => ({ d, hl: getHealth(d) }));
+  const target = config.targets.daily.sleepH ? config.targets.daily.sleepH * 60 : null;
+  const max = Math.max(60 * 9, target || 0, ...nights.map((n) => (n.hl && n.hl.sleepMin) || 0));
+  const W = 300, H = 130, top = 16, base = H - 18, bw = 26, gap = (W - 7 * bw) / 7;
+  const y = (min) => base - (min / max) * (base - top);
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'img', 'aria-label': 'Schlafphasen pro Nacht' });
+  if (target) svg.append(svgEl('line', { x1: 0, x2: W, y1: y(target), y2: y(target), class: 'target' }));
+  nights.forEach(({ d, hl }, i) => {
+    const x = gap / 2 + i * (bw + gap);
+    svg.append(svgEl('text', { x: x + bw / 2, y: H - 4, class: 'lbl' }, WD_SHORT[parseYmd(d).getDay()]));
+    if (!hl || !hl.sleepMin) return;
+    const deep = hl.deepMin || 0, rem = hl.remMin || 0, core = hl.coreMin || 0;
+    const other = Math.max(0, hl.sleepMin - deep - rem - core);
+    let acc = 0;
+    for (const [v, cls] of [[deep, 's-deep'], [rem, 's-rem'], [core, 's-core'], [other, 's-other']]) {
+      if (!v) continue;
+      svg.append(svgEl('rect', { x, width: bw, y: y(acc + v), height: y(acc) - y(acc + v), class: cls, rx: 2 }));
+      acc += v;
+    }
+    svg.append(svgEl('text', { x: x + bw / 2, y: y(acc) - 4, class: 'val' }, `${Math.floor(hl.sleepMin / 60)}:${pad2(Math.round(hl.sleepMin % 60))}`));
+  });
+  return svg;
+}
+
+/** Punkte-Linie über 7 Tage (z. B. Ruhepuls, HRV) mit Werten. */
+function dayLine(dates, values) {
+  const pts = values.map((v, i) => ({ v, i })).filter((p) => p.v != null);
+  const W = 300, H = 80, top = 16, base = H - 18;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'img' });
+  const step = W / 7, cx = (i) => step / 2 + i * step;
+  dates.forEach((d, i) => svg.append(svgEl('text', { x: cx(i), y: H - 4, class: 'lbl' }, WD_SHORT[parseYmd(d).getDay()])));
+  if (!pts.length) return svg;
+  const min = Math.min(...pts.map((p) => p.v)), max = Math.max(...pts.map((p) => p.v)), span = max - min || 1;
+  const y = (v) => base - 6 - ((v - min) / span) * (base - top - 12);
+  if (pts.length > 1) svg.append(svgEl('path', { d: pts.map((p, k) => `${k ? 'L' : 'M'}${cx(p.i).toFixed(1)} ${y(p.v).toFixed(1)}`).join(' '), class: 'line' }));
+  for (const p of pts) {
+    svg.append(svgEl('circle', { cx: cx(p.i), cy: y(p.v), r: 3, class: 'dot' }));
+    svg.append(svgEl('text', { x: cx(p.i), y: y(p.v) - 7, class: 'val' }, p.v));
+  }
+  return svg;
+}
+
+const legend = (items) => h('div', { class: 'legend' }, items.map(([cls, label]) => h('span', {}, h('i', { class: cls }), label)));
+
+// ---------- Auswertung ----------
+
+const weekUi = { offset: 0 };
+
 function viewWeek() {
   const start = weekStartFor(weekUi.offset);
   const dates = weekDates(start);
   const today = logicalToday();
   const days = countedDays(dates);
   const go = (offset) => { weekUi.offset = Math.max(0, offset); render(); ensureWeekData(); };
-  // 8 Wochen für Sparklines (älteste zuerst)
   const weeks8 = Array.from({ length: 8 }, (_, i) => weekDates(addDays(start, -7 * (7 - i))));
+  const t = config.targets.daily;
 
-  // 1. Wochenziele Training
-  const goals = config.training.filter(isActive).map((t) => {
-    const target = config.targets.weekly[weeklyKey(t)];
-    if (target == null) return null;
-    const entries = countedDates(dates).flatMap((d) => trainingFor(d).filter((e) => e.id === t.id));
-    const ist = t.type === 'minutes' ? entries.reduce((s, e) => s + (e.min || 0), 0) : entries.length;
-    const pct = target > 0 ? Math.min(100, (ist / target) * 100) : 100;
-    return h('div', { class: 'goal' },
-      h('div', { class: 'goal-top' }, h('span', {}, t.name), h('span', {}, `${fmtNum(ist)} / ${fmtNum(target)}${t.type === 'minutes' ? ' min' : ''}`)),
-      h('div', { class: 'bar' }, h('i', { style: `width:${pct}%` })));
-  }).filter(Boolean);
+  // Level und Wochen-Score
+  const lvl = levelInfo();
+  const ws = weekScore(dates);
+  const levelCard = h('div', { class: 'level-card' },
+    h('div', { class: 'level-top' },
+      h('div', {}, h('div', { class: 'level-num' }, `Level ${lvl.level}`),
+        h('div', { class: 'small muted' }, `${fmtNum(lvl.xp - lvl.prev)} / ${fmtNum(lvl.next - lvl.prev)} Punkte bis Level ${lvl.level + 1}`)),
+      h('div', { class: 'level-score' }, h('b', {}, ws ? `${ws.score} %` : '–'), h('span', {}, weekUi.offset ? 'Wochen-Score' : 'diese Woche'))),
+    h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(((lvl.xp - lvl.prev) / (lvl.next - lvl.prev)) * 100)}%` })),
+    h('div', { class: 'attrs' }, Object.entries(ATTRS).map(([k, label]) => {
+      const v = ws && ws.attrs[k];
+      return h('div', { class: 'attr' },
+        h('div', { class: 'goal-top' }, h('span', {}, label), h('span', {}, v != null ? `${v} %` : '–')),
+        h('div', { class: 'bar thin' }, h('i', { style: `width:${v || 0}%` })));
+    })),
+    h('p', { class: 'hint' }, 'Jede abgeschlossene Woche bringt ihren Score als Punkte. Pause-Tage zählen nicht.'));
 
-  // 2. Gewohnheiten-Raster
-  const habits = byPrio(config.habits.filter(isActive));
-  const grid = h('table', { class: 'grid' },
-    h('thead', {}, h('tr', {}, h('th', {}, ''), dates.map((d) => h('th', {}, WD_SHORT[parseYmd(d).getDay()])))),
-    h('tbody', {}, habits.map((hb) => h('tr', {},
-      h('td', {}, hb.name),
-      dates.map((d) => {
-        const day = getDay(d);
-        let cls = 'none', label = 'nicht eingetragen';
-        if (d > today) { cls = 'future'; label = ''; }
-        else if (day && day.pause) { cls = 'pause'; label = 'Pause'; }
-        else if (day && day.habits && day.habits[hb.id] === true) { cls = 'done'; label = 'erledigt'; }
-        else if (day && day.habits && day.habits[hb.id] === false) { cls = 'no'; label = 'nicht gemacht'; }
-        return h('td', { class: 'cell' }, h('i', { class: cls, title: label, 'aria-label': `${WD_SHORT[parseYmd(d).getDay()]}: ${label}` }));
-      })))));
+  // Soll / Ist
+  const goals = trainingGoals(dates).map((g) => goalRow(g.t.name, `${fmtNum(g.ist)} / ${fmtNum(g.soll)}${g.unit}`, g.rate));
+  const counted = countedDates(dates).length;
+  const habitRows = byPrio(config.habits.filter(isActive)).map((hb) => {
+    const done = countedDates(dates).filter((d) => ((getDay(d) || {}).habits || {})[hb.id] === true).length;
+    return goalRow(hb.name, `${done} / ${counted} Tage`, counted ? done / counted : 0);
+  });
+  const fed = days.map(nutritionOf).filter((n) => n.any);
+  const nutriRows = [
+    t.kcal ? goalRow('Kalorien Ø', fed.length ? `${fmtNum(avg(fed.map((n) => n.kcal)))} / ${fmtNum(t.kcal)} kcal` : '–', fed.length ? Math.min(1, avg(fed.map((n) => n.kcal)) / t.kcal) : 0) : null,
+    t.protein ? goalRow('Protein Ø', fed.length ? `${fmtNum(avg(fed.map((n) => n.protein)))} / ${fmtNum(t.protein)} g` : '–', fed.length ? Math.min(1, avg(fed.map((n) => n.protein)) / t.protein) : 0) : null,
+  ].filter(Boolean);
+  const steps = healthAvg('steps', dates), sleep = healthAvg('sleepMin', dates);
+  const healthRows = [
+    t.steps ? goalRow('Schritte Ø', steps != null ? `${fmtNum(steps)} / ${fmtNum(t.steps)}` : '–', steps != null ? steps / t.steps : 0) : null,
+    t.sleepH ? goalRow('Schlaf Ø', sleep != null ? `${fmtDuration(sleep)} / ${fmtDuration(t.sleepH * 60)}` : '–', sleep != null ? sleep / (t.sleepH * 60) : 0) : null,
+  ].filter(Boolean);
 
-  // 3. Kennzahlen im Wochenschnitt
+  // Schlaf & Herz
+  const hasSleep = dates.some((d) => (getHealth(d) || {}).sleepMin);
+  const avgOf = (k) => healthAvg(k, dates);
+  const sleepSum = [
+    ['Gesamt', avgOf('sleepMin')], ['Tief', avgOf('deepMin')], ['REM', avgOf('remMin')],
+  ].filter(([, v]) => v != null).map(([l, v]) => `${l} Ø ${fmtDuration(v)}`).join(' · ');
+  const rhrVals = dates.map((d) => (getHealth(d) || {}).restingHr ?? null);
+  const hrvVals = dates.map((d) => (getHealth(d) || {}).hrv ?? null);
+  const hasHeart = rhrVals.some((v) => v != null) || hrvVals.some((v) => v != null);
+
+  // Kennzahlen
   const kpis = [];
   for (const m of config.metrics.filter(isActive)) {
     if (m.type === 'number') {
@@ -1663,15 +1877,32 @@ function viewWeek() {
         sparkline([weeks8.map((w) => metricAvg(m, w, (v) => v.sys)), weeks8.map((w) => metricAvg(m, w, (v) => v.dia))])));
     } else if (m.type === 'scale10') {
       const v = metricAvg(m, dates);
-      kpis.push(kpi(`${m.name} Ø`, v != null ? fmtNum(v, 1) : '–'));
+      kpis.push(kpi(`${m.name} Ø`, v != null ? fmtNum(v, 1) : '–', null, sparkline([weeks8.map((w) => metricAvg(m, w))])));
     }
   }
-  const steps = healthAvg('steps', dates), sleep = healthAvg('sleepMin', dates);
   if (steps != null) kpis.push(kpi('Schritte Ø', fmtNum(steps), null, sparkline([weeks8.map((w) => healthAvg('steps', w))])));
   if (sleep != null) kpis.push(kpi('Schlaf Ø', fmtDuration(sleep), null, sparkline([weeks8.map((w) => healthAvg('sleepMin', w))])));
-  const fed = days.map(nutritionOf).filter((n) => n.any);
+  const rhr = avgOf('restingHr'), hrv = avgOf('hrv');
+  if (rhr != null) kpis.push(kpi('Ruhepuls Ø', `${fmtNum(rhr)} bpm`, null, sparkline([weeks8.map((w) => healthAvg('restingHr', w))])));
+  if (hrv != null) kpis.push(kpi('HRV Ø', `${fmtNum(hrv)} ms`, null, sparkline([weeks8.map((w) => healthAvg('hrv', w))])));
   kpis.push(kpi('Ernährung Ø', fed.length ? `${fmtNum(avg(fed.map((n) => n.kcal)))} kcal` : '–',
     fed.length ? `${fmtNum(avg(fed.map((n) => n.protein)))} g Protein · ${fed.length} Tage` : null));
+
+  // Gewohnheiten-Raster
+  const habits = byPrio(config.habits.filter(isActive));
+  const grid = h('table', { class: 'grid' },
+    h('thead', {}, h('tr', {}, h('th', {}, ''), dates.map((d) => h('th', {}, WD_SHORT[parseYmd(d).getDay()])))),
+    h('tbody', {}, habits.map((hb) => h('tr', {},
+      h('td', {}, hb.name),
+      dates.map((d) => {
+        const day = getDay(d);
+        let cls = 'none', label = 'nicht eingetragen';
+        if (d > today) { cls = 'future'; label = ''; }
+        else if (day && day.pause) { cls = 'pause'; label = 'Pause'; }
+        else if (day && day.habits && day.habits[hb.id] === true) { cls = 'done'; label = 'erledigt'; }
+        else if (day && day.habits && day.habits[hb.id] === false) { cls = 'no'; label = 'nicht gemacht'; }
+        return h('td', { class: 'cell' }, h('i', { class: cls, title: label, 'aria-label': `${WD_SHORT[parseYmd(d).getDay()]}: ${label}` }));
+      })))));
 
   const pauseCount = dates.filter((d) => d <= today && (getDay(d) || {}).pause).length;
   const end = addDays(start, 6);
@@ -1683,12 +1914,26 @@ function viewWeek() {
         h('small', {}, `${formatDateShort(start)} – ${formatDateShort(end)}${weekUi.offset ? ' · Tippen für aktuelle Woche' : ''}`)),
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Nächste Woche', disabled: weekUi.offset === 0, onclick: () => go(weekUi.offset - 1) }, '›')),
     pauseCount ? h('p', { class: 'hint' }, `${pauseCount} Pause-Tag${pauseCount > 1 ? 'e' : ''} – nicht mitgezählt.`) : null,
-    h('h2', {}, 'Wochenziele'),
-    goals.length ? goals : h('p', { class: 'empty-note' }, 'Keine Wochenziele gesetzt.'),
-    h('h2', {}, 'Gewohnheiten'),
-    habits.length ? grid : h('p', { class: 'empty-note' }, 'Keine aktiven Gewohnheiten.'),
-    h('h2', {}, 'Wochenschnitt'),
-    h('div', { class: 'kpis' }, kpis));
+
+    levelCard,
+    section('s-goals', 'Soll / Ist', null, [
+      goals.length ? [h('p', { class: 'subhead first' }, 'Training pro Woche'), goals] : null,
+      healthRows.length ? [h('p', { class: 'subhead' }, 'Aktivität & Schlaf'), healthRows] : null,
+      nutriRows.length ? [h('p', { class: 'subhead' }, 'Ernährung'), nutriRows] : null,
+      habitRows.length ? [h('p', { class: 'subhead' }, 'Gewohnheiten'), habitRows] : null,
+      !goals.length && !healthRows.length && !nutriRows.length ? h('p', { class: 'hint' }, 'Ziele legst du im Setup unter „Ziele“ fest.') : null,
+    ]),
+    hasSleep ? section('s-sleep', 'Schlaf', { text: avgOf('sleepMin') != null ? `Ø ${fmtDuration(avgOf('sleepMin'))}` : '' }, [
+      sleepChart(dates),
+      legend([['s-deep', 'Tief'], ['s-rem', 'REM'], ['s-core', 'Kern'], ['s-other', 'sonstiger Schlaf']]),
+      sleepSum ? h('p', { class: 'hint' }, sleepSum) : null,
+    ]) : null,
+    hasHeart ? section('s-heart', 'Herz', null, [
+      rhrVals.some((v) => v != null) ? [h('p', { class: 'subhead first' }, `Ruhepuls (bpm)${rhr != null ? ` · Ø ${fmtNum(rhr)}` : ''}`), dayLine(dates, rhrVals)] : null,
+      hrvVals.some((v) => v != null) ? [h('p', { class: 'subhead' }, `HRV (ms)${hrv != null ? ` · Ø ${fmtNum(hrv)}` : ''}`), dayLine(dates, hrvVals)] : null,
+    ]) : null,
+    section('s-kpis', 'Wochenschnitt', null, h('div', { class: 'kpis' }, kpis)),
+    section('s-grid', 'Gewohnheiten-Raster', null, habits.length ? grid : h('p', { class: 'empty-note' }, 'Keine aktiven Gewohnheiten.')));
   attachSwipe(root, () => go(weekUi.offset - 1), () => go(weekUi.offset + 1));
   return root;
 }
@@ -1741,7 +1986,10 @@ function healthStatusCard(date) {
     hl && hl.stepSources && Object.keys(hl.stepSources).length > 1
       ? row('Quellen (roh)', Object.entries(hl.stepSources).map(([k, v]) => `${k}: ${fmtNum(v)}`).join(' · ')) : null,
     row('Gewicht', hl && hl.weight != null ? `${fmtNum(hl.weight, 1)} kg` : 'fehlt'),
-    row('Schlaf', hl && hl.sleepMin != null ? fmtDuration(hl.sleepMin) : 'fehlt'));
+    row('Schlaf', hl && hl.sleepMin != null ? fmtDuration(hl.sleepMin) : 'fehlt'),
+    hl && (hl.deepMin != null || hl.remMin != null) ? row('davon Tief / REM', `${hl.deepMin != null ? fmtDuration(hl.deepMin) : '–'} / ${hl.remMin != null ? fmtDuration(hl.remMin) : '–'}`) : null,
+    row('Ruhepuls', hl && hl.restingHr != null ? `${hl.restingHr} bpm` : 'fehlt'),
+    row('HRV', hl && hl.hrv != null ? `${hl.hrv} ms` : 'fehlt'));
 }
 
 /** Link zur Kurzbefehl-Anleitung im App-Repo. */
@@ -1909,7 +2157,10 @@ function softRender() {
 function ensureWeekData() {
   if (!conn()) return Promise.resolve();
   const start = weekStartFor(weekUi.offset);
+  // Erst die sichtbaren 8 Wochen, danach alles (für das Level).
   return ensureDays(addDays(start, -7 * 8), addDays(start, 6))
+    .then((changed) => { if (changed && ui.tab === 'week') softRender(); })
+    .then(() => ensureDays(null, null))
     .then((changed) => { if (changed && ui.tab === 'week') softRender(); })
     .catch((e) => { Sync.handleError(e); updateDot(); });
 }

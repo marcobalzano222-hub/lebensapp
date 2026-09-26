@@ -140,7 +140,7 @@ def github_request(method, url_parts, token, body=None):
 token = act('gettext', CustomOutputName='Token', WFTextActionText='github_pat_…')
 repo = act('gettext', CustomOutputName='Repo', WFTextActionText='marcobalzano222-hub/lebensapp-data-satoshi')
 
-comment('Lebensapp Health (Version 3): schreibt Schritte, Gewicht und Schlaf des Vortags als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
+comment('Lebensapp Health (Version 4): schreibt Schritte, Gewicht, Schlaf, Ruhepuls und HRV des Vortags als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
 
 now = act('date', CustomOutputName='Jetzt', WFDateActionMode='Current Date')
 yesterday = adjust(now, 'Gestern', 'Subtract', 1, 'days')
@@ -186,7 +186,22 @@ sleep = lines_of(sleep_found, 'Schlaf-Samples', [
     var('Repeat Item', prop('Value')),
     var('Repeat Item', prop('Start Date'), datefmt(ISO)),
     var('Repeat Item', prop('End Date'), datefmt(ISO)),
+    var('Repeat Item', prop('Source')),
 ], 'Schlaf')
+
+comment('Herz: Ruhepuls und Herzfrequenzvariabilität (HRV) rund um den Vortag, mit Quelle (z. B. Oura oder Watch)')
+rhr_found = find_health('Resting Heart Rate', (sleep_start, 'Schlaf ab'), (day_end, 'Tagesende'), 'Ruhepuls-Samples')
+rhr = lines_of(rhr_found, 'Ruhepuls-Samples', [
+    var('Repeat Item', prop('Start Date'), datefmt(ISO)),
+    var('Repeat Item', prop('Value')),
+    var('Repeat Item', prop('Source')),
+], 'Ruhepuls')
+hrv_found = find_health('Heart Rate Variability', (sleep_start, 'Schlaf ab'), (day_end, 'Tagesende'), 'HRV-Samples')
+hrv = lines_of(hrv_found, 'HRV-Samples', [
+    var('Repeat Item', prop('Start Date'), datefmt(ISO)),
+    var('Repeat Item', prop('Value')),
+    var('Repeat Item', prop('Source')),
+], 'HRV')
 
 comment('Datei zusammenbauen')
 day_str = out(day, 'Tag', datefmt(DAY))
@@ -196,6 +211,8 @@ data = act('dictionary', CustomOutputName='Health-Daten', WFItems=fields([
     ('steps', [out(steps, 'Schritte')]),
     ('weight', [out(weight, 'Gewicht')]),
     ('sleep', [out(sleep, 'Schlaf')]),
+    ('restingHr', [out(rhr, 'Ruhepuls')]),
+    ('hrv', [out(hrv, 'HRV')]),
     ('stepsStart', [out(col_start, 'Schritt-Start')]),
     ('stepsEnd', [out(col_end, 'Schritt-Ende')]),
     ('stepsValue', [out(col_value, 'Schritt-Wert')]),
