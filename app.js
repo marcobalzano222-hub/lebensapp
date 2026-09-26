@@ -230,6 +230,7 @@ let config = null;
 function loadConfigFromCache() {
   const f = Store.get('config.json');
   config = f ? normalizeConfig(f.data) : null;
+  healthCache.clear();
 }
 function saveConfig(message = 'config: update') {
   meta.commitMsg = Object.assign(meta.commitMsg || {}, { 'config.json': message });
@@ -301,8 +302,16 @@ function parseHealthTime(v) {
   return new Date(y, m[2] - 1, m[1], m[4], m[5], m[6] || 0).getTime();
 }
 
-/** Rang einer Quelle wie in der Health-App (Standard): Watch vor iPhone vor anderen Apps. */
-const sourceRank = (src) => (/watch/i.test(src) ? 0 : /iphone/i.test(src) ? 1 : 2);
+/**
+ * Rang einer Quelle. Maßgeblich ist die Reihenfolge aus dem Setup (wie in Health →
+ * Schritte → Datenquellen); unbekannte Quellen: Watch vor anderen vor iPhone.
+ */
+function sourceRank(src) {
+  const order = (config && config.health && config.health.sourceOrder) || [];
+  const i = order.indexOf(src);
+  if (i !== -1) return i;
+  return order.length + (/watch/i.test(src) ? 0 : /iphone/i.test(src) ? 2 : 1);
+}
 
 /**
  * Schritte eines Tages aus Einzelwerten (Spalten Start/Ende/Wert/Quelle).
@@ -947,6 +956,16 @@ function viewSetup() {
   // Apple Health
   const healthDates = cachedDates('health');
   const lastHealth = healthDates[healthDates.length - 1];
+  // Alle Schritt-Quellen, sortiert nach aktueller Reihenfolge
+  const stepSources = [...new Set(healthDates.flatMap((d) => Object.keys((getHealth(d) || {}).stepSources || {})))]
+    .sort((a, b) => sourceRank(a) - sourceRank(b) || a.localeCompare(b));
+  const moveSource = (i, dir) => {
+    const list = [...stepSources];
+    [list[i], list[i + dir]] = [list[i + dir], list[i]];
+    c.health.sourceOrder = list;
+    healthCache.clear();
+    commitConfig('health', true);
+  };
   const seenTypes = [...new Set(healthDates.flatMap((d) => (getHealth(d) || { workouts: [] }).workouts.map((w) => w.type)))].sort();
   const mapRows = seenTypes.map((type) => {
     const auto = autoMapWorkout(type);
@@ -1029,6 +1048,13 @@ function viewSetup() {
     }, c.health.shortcut ? 'Kurzbefehl installiert ✓' : 'Kurzbefehl ist installiert')),
     h('p', { class: 'hint' }, 'Dann erscheint morgens ein Knopf, der die Daten von gestern überträgt, falls sie noch fehlen.'),
     lastHealth ? healthStatusCard(lastHealth) : h('p', { class: 'hint' }, 'Noch keine Health-Daten empfangen.'),
+    stepSources.length > 1 ? [
+      h('p', { class: 'hint' }, 'Reihenfolge der Schritt-Quellen – so wie in der Health-App unter Schritte → Datenquellen und Zugriff. Wo sich Messungen überschneiden, zählt die obere Quelle.'),
+      h('div', { class: 'rows' }, stepSources.map((src, i) => h('div', { class: 'row' }, h('div', { class: 'row-main' },
+        h('span', { style: 'flex:1' }, `${i + 1}. ${src}`),
+        h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nach oben', disabled: i === 0, onclick: () => moveSource(i, -1) }, '↑'),
+        h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nach unten', disabled: i === stepSources.length - 1, onclick: () => moveSource(i, 1) }, '↓'))))),
+    ] : null,
     seenTypes.length ? [h('p', { class: 'hint' }, 'Workout-Typen zuordnen (Health-Workouts ersetzen manuelle Einträge derselben Art):'),
       h('div', { class: 'rows' }, mapRows)] : null,
   );
