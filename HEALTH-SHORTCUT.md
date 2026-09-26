@@ -6,7 +6,8 @@ Der Kurzbefehl liest die Daten des **Vortags** aus Apple Health und legt sie als
 |---|---|
 | Schritte | Summe des Vortags |
 | Gewicht | letzte Messung am Vortag (z. B. Withings-Waage) |
-| Schlaf | die Nacht, die am Morgen des Vortags endet |
+| Schlaf | die Nacht, die am Morgen des Vortags endet, mit Tief-, REM- und Kernschlaf |
+| Ruhepuls, HRV | vom Vortag (z. B. vom Oura Ring oder der Watch) |
 
 Workouts sind (noch) nicht dabei: Der eingebaute Kurzbefehl kann den Workout-Typ nicht zuverlässig auslesen. Training trägst du weiter mit einem Tap in der App ein.
 
@@ -68,7 +69,9 @@ Schick einen Screenshot der Fehlermeldung (ohne Token). Häufige Ursachen:
   "source": "shortcut",
   "steps": "2026-10-01T00:00:00+02:00|8423",
   "weight": "2026-10-01T07:12:00+02:00|82,1",
-  "sleep": "Kern|2026-09-30T23:30:00+02:00|2026-10-01T02:00:00+02:00\nREM|…",
+  "sleep": "Kern|2026-09-30T23:30:00+02:00|2026-10-01T02:00:00+02:00|Oura\nREM|…",
+  "restingHr": "2026-10-01T03:12:00+02:00|52|Oura",
+  "hrv": "2026-10-01T03:12:00+02:00|48|Oura",
   "debug": "tag=… schrittSamples=… schlafSamples=…"
 }
 ```

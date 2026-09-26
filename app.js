@@ -2043,6 +2043,66 @@ function exportCsv() {
   return rows.map((r) => r.map(esc).join(',')).join('\n') + '\n';
 }
 
+/** Kompakte Tagestabelle (eine Zeile pro Tag) mit kurzer Anleitung – zum Einfügen in einen Claude-Chat. */
+function exportForClaude(weeks = 8) {
+  const today = logicalToday();
+  const dates = Array.from({ length: weeks * 7 }, (_, i) => addDays(today, -(weeks * 7 - 1) + i));
+  const habits = config.habits.filter(isActive);
+  const metrics = config.metrics.filter(isActive);
+  const training = config.training.filter(isActive);
+  const cols = ['date', 'pause', ...habits.map((x) => x.id)];
+  for (const m of metrics) cols.push(...(m.type === 'bloodpressure' ? [`${m.id}_sys`, `${m.id}_dia`] : [m.id]));
+  cols.push('kcal', 'protein', ...training.map((t) => `${t.id}${t.type === 'minutes' ? '_min' : ''}`),
+    'steps', 'sleep_min', 'deep_min', 'rem_min', 'resting_hr', 'hrv_ms');
+  const rows = [cols.join(',')];
+  for (const d of dates) {
+    const day = getDay(d) || {};
+    const hl = getHealth(d) || {};
+    if (!getDay(d) && !getHealth(d)) continue;
+    const n = nutritionOf(Object.assign(emptyDay(d), day));
+    const tr = trainingFor(d);
+    const r = [d, day.pause || '', ...habits.map((x) => { const v = (day.habits || {})[x.id]; return v === true ? 1 : v === false ? 0 : ''; })];
+    for (const m of metrics) {
+      const v = metricOn(m, d);
+      if (m.type === 'bloodpressure') r.push(v ? v.sys : '', v ? v.dia : ''); else r.push(v ?? '');
+    }
+    r.push(n.any ? Math.round(n.kcal) : '', n.any ? Math.round(n.protein) : '',
+      ...training.map((t) => { const e = tr.filter((x) => x.id === t.id); return e.length ? (t.type === 'minutes' ? e.reduce((a, x) => a + (x.min || 0), 0) : e.length) : ''; }),
+      hl.steps ?? '', hl.sleepMin ?? '', hl.deepMin ?? '', hl.remMin ?? '', hl.restingHr ?? '', hl.hrv ?? '');
+    rows.push(r.join(','));
+  }
+  const legendText = [
+    ...habits.map((x) => `${x.id} = ${x.name} (1 erledigt, 0 nicht gemacht, leer = nicht eingetragen)`),
+    ...metrics.map((m) => `${m.id} = ${m.name}${m.type === 'scale10' ? ' (1–10)' : m.unit ? ` (${m.unit})` : ''}`),
+    ...training.map((t) => `${t.id} = ${t.name} (${t.type === 'minutes' ? 'Minuten' : 'Einheiten'})`),
+    'steps, sleep_min, deep_min, rem_min, resting_hr, hrv_ms = aus Apple Health (Schlaf = Nacht vor dem Datum)',
+    'pause = Pause-Tag (krank, Reise …) – bei Auswertungen ausklammern',
+  ];
+  const goals = [
+    ...trainingGoals(weekDates(mondayOf(today))).map((g) => `${g.t.name}: ${g.soll}${g.unit} pro Woche`),
+    ...Object.entries(config.targets.daily).filter(([, v]) => v != null).map(([k, v]) => `${k}: ${v} pro Tag`),
+  ];
+  return [
+    `Hier sind meine Lebensapp-Daten der letzten ${weeks} Wochen (eine Zeile pro Tag, CSV).`,
+    'Bitte suche nach Mustern und Zusammenhängen (z. B. Schlaf, HRV, Training, Meditation, Befinden) und gib mir 3–5 konkrete, umsetzbare Erkenntnisse. Nenne auch, wo die Datenlage zu dünn ist.',
+    '', 'Spalten:', ...legendText.map((x) => `- ${x}`),
+    goals.length ? '' : null, goals.length ? 'Meine Ziele:' : null, ...goals.map((x) => `- ${x}`),
+    '', '```csv', ...rows, '```',
+  ].filter((x) => x != null).join('\n');
+}
+
+async function copyForClaude() {
+  const text = exportForClaude();
+  try {
+    await navigator.clipboard.writeText(text);
+    syncUi.msg = 'Kopiert – jetzt einfach in einen Claude-Chat einfügen.';
+  } catch {
+    await shareFile(`lebensapp-claude-${ymd(new Date())}.txt`, text, 'text/plain');
+    syncUi.msg = '';
+  }
+  softRender();
+}
+
 /** Über das iOS-Share-Sheet teilen, sonst herunterladen. */
 async function shareFile(name, text, type) {
   const file = new File([text], name, { type });
@@ -2090,6 +2150,8 @@ function viewSync() {
     h('div', { class: 'btn-row' },
       h('button', { type: 'button', class: 'btn', disabled: syncUi.loading, onclick: () => shareFile(`lebensapp-${stamp}.json`, exportJson(), 'application/json') }, 'Alles als JSON'),
       h('button', { type: 'button', class: 'btn', disabled: syncUi.loading, onclick: () => shareFile(`lebensapp-${stamp}.csv`, exportCsv(), 'text/csv') }, 'Alles als CSV')),
+    h('div', { class: 'btn-row' },
+      h('button', { type: 'button', class: 'btn block', disabled: syncUi.loading, onclick: copyForClaude }, 'Für Claude kopieren (8 Wochen)')),
 
     h('h2', {}, 'Gerät'),
     h('button', {

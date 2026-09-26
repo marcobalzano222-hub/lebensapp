@@ -52,9 +52,9 @@ Ein iOS-Kurzbefehl kann täglich Schritte, Schlaf, Gewicht und Workouts aus Appl
 | Reiter | Inhalt |
 |---|---|
 | **Heute** | Der ganze Tag auf einer Seite, gruppiert in Messwerte, Gewohnheiten, Ernährung, Training und Befinden. Abschnitte lassen sich per Tap einklappen; rechts steht, wie viel schon erledigt ist. Wischen nach rechts = Vortag, nach links = zurück Richtung heute; Tap auf das Datum = heute. |
-| **Woche** | Wochenziele Training, Gewohnheiten-Raster, Wochenschnitt mit kleinen 8-Wochen-Verläufen. Wischen = andere Wochen. |
+| **Auswertung** | Level (Körper, Treibstoff, Geist), Soll/Ist für Training, Schritte, Schlaf, Ernährung und Gewohnheiten, Schlafphasen pro Nacht, Ruhepuls und HRV, Wochenschnitt mit 8-Wochen-Verläufen, Gewohnheiten-Raster. Wischen = andere Wochen. |
 | **Setup** | Alles aus `config.json`. |
-| **Sync** | Verbindungsstatus, „Jetzt synchronisieren“, Export (JSON/CSV) über das Teilen-Menü, Token entfernen. |
+| **Sync** | Verbindungsstatus, „Jetzt synchronisieren“, Export (JSON/CSV), „Für Claude kopieren“ (8 Wochen als Tabelle mit Anleitung), Token entfernen. |
 
 - **Kachel antippen** = erledigt, nochmal = zurück. **Lange drücken** = ausdrücklich „nicht gemacht“.
 - **Blutdruck und Gewicht** sind mit dem letzten Wert vorbelegt (grau). „Übernehmen“ oder mit −/+ korrigieren; Tap auf die Zahl öffnet den Ziffernblock.
@@ -108,4 +108,4 @@ Dann http://localhost:8000 öffnen. Auf `localhost` ist der Service Worker abges
 
 ## Bewusst noch nicht umgesetzt
 
-Spieler-Level (V1.2), Benachrichtigungen, Statistiken/Korrelationen in der App, Journal/Freitext, Streaks, Konten/Backend.
+Benachrichtigungen, Statistiken/Korrelationen in der App, Journal/Freitext, Streaks, Konten/Backend.
