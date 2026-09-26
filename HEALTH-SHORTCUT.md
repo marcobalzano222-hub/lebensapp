@@ -73,4 +73,6 @@ Schick einen Screenshot der Fehlermeldung (ohne Token). Häufige Ursachen:
 }
 ```
 
-iOS filtert „Startdatum ist zwischen“ nur tageweise. Deshalb liefert der Kurzbefehl Zeitstempel mit, und die App wählt selbst aus: Schritte des Tages (von iOS pro Tag gruppiert, ohne Doppelzählung iPhone/Watch), die letzte Gewichtsmessung des Tages und die Schlafphasen, die zwischen 18:00 am Vortag und 12:00 beginnen. „Im Bett“ und „Wach“ zählen nicht als Schlaf; Überschneidungen werden nicht doppelt gezählt. `debug` enthält Zeitfenster und Anzahl gefundener Messungen zur Fehlersuche. Optional versteht die App auch `workouts` als Zeilen `Typ|Start|Minuten`.
+Zusätzlich liefert der Kurzbefehl alle Schritt-Einzelwerte als Spalten `stepsStart`, `stepsEnd`, `stepsValue`, `stepsSource` (eine Zeile pro Messung). Die Tagesgruppierung von iOS addiert nämlich alle Quellen (iPhone, Watch, Ring); die App rechnet Überschneidungen heraus wie die Health-App (Watch vor iPhone vor anderen Apps).
+
+iOS filtert „Startdatum ist zwischen“ nur tageweise. Deshalb liefert der Kurzbefehl Zeitstempel mit, und die App wählt selbst aus: Schritte des Tages (ohne Doppelzählung), die letzte Gewichtsmessung des Tages und die Schlafphasen, die zwischen 18:00 am Vortag und 12:00 beginnen. „Im Bett“ und „Wach“ zählen nicht als Schlaf; Überschneidungen werden nicht doppelt gezählt. `debug` enthält Zeitfenster und Anzahl gefundener Messungen zur Fehlersuche. Optional versteht die App auch `workouts` als Zeilen `Typ|Start|Minuten`.

@@ -140,7 +140,7 @@ def github_request(method, url_parts, token, body=None):
 token = act('gettext', CustomOutputName='Token', WFTextActionText='github_pat_…')
 repo = act('gettext', CustomOutputName='Repo', WFTextActionText='marcobalzano222-hub/lebensapp-data-satoshi')
 
-comment('Lebensapp Health (Version 2): schreibt Schritte, Gewicht und Schlaf des Vortags als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
+comment('Lebensapp Health (Version 3): schreibt Schritte, Gewicht und Schlaf des Vortags als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
 
 now = act('date', CustomOutputName='Jetzt', WFDateActionMode='Current Date')
 yesterday = adjust(now, 'Gestern', 'Subtract', 1, 'days')
@@ -165,6 +165,19 @@ weight = lines_of(weight_found, 'Gewicht-Samples', [
 step_count = act('count', CustomOutputName='Anzahl Schritt-Samples', WFCountType='Items',
                  WFInput=attach(out(steps_found, 'Schritt-Samples')), Input=attach(out(steps_found, 'Schritt-Samples')))
 
+comment('Schritte einzeln mit Quelle (iPhone, Watch, Ring …). Die App zählt überlappende Zeiträume nur einmal, wie die Health-App.')
+steps_raw = find_health('Steps', (day, 'Tag'), (day_end, 'Tagesende'), 'Schritt-Einzelwerte')
+def column(prop_name, name, *aggr):
+    d = act('properties.health.quantity', CustomOutputName=f'{name} (Liste)', WFContentItemPropertyName=prop_name,
+            WFInput=attach(out(steps_raw, 'Schritt-Einzelwerte')))
+    return act('text.combine', CustomOutputName=name, WFTextSeparator='New Lines',
+               text=attach(out(d, f'{name} (Liste)', *aggr)))
+col_start = column('Start Date', 'Schritt-Start', datefmt(ISO))
+col_end = column('End Date', 'Schritt-Ende', datefmt(ISO))
+col_value = column('Value', 'Schritt-Wert')
+col_source = column('Source', 'Schritt-Quelle')
+
+
 comment('Schlaf: alle Schlaf-Phasen der Nacht, die am Morgen des Vortags endet (die App rechnet die Dauer aus)')
 sleep_found = find_health('Sleep', (sleep_start, 'Schlaf ab'), (sleep_end, 'Schlaf bis'), 'Schlaf-Samples')
 sleep_count = act('count', CustomOutputName='Anzahl Schlaf-Samples', WFCountType='Items',
@@ -183,6 +196,10 @@ data = act('dictionary', CustomOutputName='Health-Daten', WFItems=fields([
     ('steps', [out(steps, 'Schritte')]),
     ('weight', [out(weight, 'Gewicht')]),
     ('sleep', [out(sleep, 'Schlaf')]),
+    ('stepsStart', [out(col_start, 'Schritt-Start')]),
+    ('stepsEnd', [out(col_end, 'Schritt-Ende')]),
+    ('stepsValue', [out(col_value, 'Schritt-Wert')]),
+    ('stepsSource', [out(col_source, 'Schritt-Quelle')]),
     # Diagnose: Zeitfenster und Anzahl gefundener Messungen (die App ignoriert das Feld)
     ('debug', ['tag=', out(day, 'Tag', datefmt(ISO)), ' ende=', out(day_end, 'Tagesende', datefmt(ISO)),
                ' schlafAb=', out(sleep_start, 'Schlaf ab', datefmt(ISO)), ' schlafBis=', out(sleep_end, 'Schlaf bis', datefmt(ISO)),

@@ -291,6 +291,53 @@ function healthLines(v, keys) {
 
 const ASLEEP_EXCLUDE = /bett|bed|wach|awake/i;
 
+/** Zeitpunkt aus ISO 8601 oder deutschem Format („25.09.2026, 07:12“). */
+function parseHealthTime(v) {
+  const t = Date.parse(v);
+  if (Number.isFinite(t)) return t;
+  const m = /(\d{1,2})\.(\d{1,2})\.(\d{2,4}),?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(String(v || ''));
+  if (!m) return NaN;
+  const y = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+  return new Date(y, m[2] - 1, m[1], m[4], m[5], m[6] || 0).getTime();
+}
+
+/** Rang einer Quelle wie in der Health-App (Standard): Watch vor iPhone vor anderen Apps. */
+const sourceRank = (src) => (/watch/i.test(src) ? 0 : /iphone/i.test(src) ? 1 : 2);
+
+/**
+ * Schritte eines Tages aus Einzelwerten (Spalten Start/Ende/Wert/Quelle).
+ * Überlappende Zeiträume zählen nur einmal: Quellen mit höherem Rang gewinnen,
+ * niedrigere tragen nur den nicht überdeckten Anteil ihres Zeitraums bei.
+ */
+function dedupSteps(raw, date) {
+  const col = (k) => String(raw[k] || '').split(/\r?\n/);
+  const starts = col('stepsStart'), ends = col('stepsEnd'), values = col('stepsValue'), sources = col('stepsSource');
+  const samples = starts.map((st, i) => ({ s: parseHealthTime(st), e: parseHealthTime(ends[i]), v: looseNum(values[i]), src: (sources[i] || '').trim() }))
+    .filter((x) => Number.isFinite(x.s) && x.v != null && ymd(new Date(x.s)) === date)
+    .map((x) => ({ ...x, e: Number.isFinite(x.e) && x.e >= x.s ? x.e : x.s }));
+  if (!samples.length) return null;
+  const bySource = {};
+  for (const x of samples) (bySource[x.src] = bySource[x.src] || []).push(x);
+  const order = Object.keys(bySource).sort((a, b) => sourceRank(a) - sourceRank(b) || a.localeCompare(b));
+  let covered = [];   // vereinigte Intervalle aller bisher gezählten Quellen
+  const overlap = (s, e) => covered.reduce((sum, [a, b]) => sum + Math.max(0, Math.min(b, e) - Math.max(a, s)), 0);
+  const inside = (t) => covered.some(([a, b]) => t >= a && t <= b);
+  const perSource = {};
+  let total = 0;
+  for (const src of order) {
+    let part = 0;
+    for (const x of bySource[src]) {
+      const len = x.e - x.s;
+      part += len > 0 ? x.v * Math.max(0, 1 - overlap(x.s, x.e) / len) : (inside(x.s) ? 0 : x.v);
+    }
+    perSource[src || '?'] = Math.round(bySource[src].reduce((a, x) => a + x.v, 0));
+    total += part;
+    covered = [...covered, ...bySource[src].map((x) => [x.s, x.e])].sort((a, b) => a[0] - b[0])
+      .reduce((acc, iv) => { const last = acc[acc.length - 1]; if (last && iv[0] <= last[1]) last[1] = Math.max(last[1], iv[1]); else acc.push([...iv]); return acc; }, []);
+  }
+  return { steps: Math.round(total), perSource };
+}
+
 /** Schlafminuten: Vereinigung aller Schlaf-Intervalle (keine Doppelzählung iPhone + Watch). */
 function sleepMinutes(samples, date) {
   // Nur die Nacht, die am Morgen von date endet: Beginn zwischen 18:00 am Vortag und 12:00.
@@ -333,11 +380,14 @@ function getHealth(date) {
   };
   const stepLines = onDate(raw.steps), weightLines = onDate(raw.weight);
   const weight = weightLines ? (weightLines.length ? weightLines[weightLines.length - 1].v : null) : looseNum(raw.weight);
-  const steps = stepLines ? (stepLines.length ? stepLines.reduce((a, x) => a + x.v, 0) : null) : looseNum(raw.steps);
+  const dedup = raw.stepsValue ? dedupSteps(raw, date) : null;
+  const steps = dedup ? dedup.steps
+    : stepLines ? (stepLines.length ? stepLines.reduce((a, x) => a + x.v, 0) : null) : looseNum(raw.steps);
   const parsed = {
     date,
     steps: steps != null && steps > 0 ? Math.round(steps) : null,
     weight: weight != null && weight > 0 ? round(weight, 1) : null,
+    stepSources: dedup ? dedup.perSource : null,
     sleepMin: raw.sleepMin != null ? looseNum(raw.sleepMin) : sleepMinutes(sleep, date),
     workouts,
   };
@@ -1532,6 +1582,8 @@ function healthStatusCard(date) {
     row('Letzte Health-Daten', `${formatDateLong(date)}`),
     f && f.data && f.data.invalid ? row('Status', 'Datei unlesbar') : null,
     row('Schritte', hl && hl.steps != null ? fmtNum(hl.steps) : 'fehlt'),
+    hl && hl.stepSources && Object.keys(hl.stepSources).length > 1
+      ? row('Quellen (roh)', Object.entries(hl.stepSources).map(([k, v]) => `${k}: ${fmtNum(v)}`).join(' · ')) : null,
     row('Gewicht', hl && hl.weight != null ? `${fmtNum(hl.weight, 1)} kg` : 'fehlt'),
     row('Schlaf', hl && hl.sleepMin != null ? fmtDuration(hl.sleepMin) : 'fehlt'));
 }
