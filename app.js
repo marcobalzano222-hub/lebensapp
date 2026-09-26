@@ -965,7 +965,7 @@ function viewSetup() {
       onclick: () => { c.health.shortcut = !c.health.shortcut; commitConfig('health', true); },
     }, c.health.shortcut ? 'Kurzbefehl installiert ✓' : 'Kurzbefehl ist installiert')),
     h('p', { class: 'hint' }, 'Dann erscheint morgens ein Knopf, der die Daten von gestern überträgt, falls sie noch fehlen.'),
-    h('p', { class: 'hint' }, lastHealth ? `Letzte Health-Daten: ${formatDateLong(lastHealth)}.` : 'Noch keine Health-Daten empfangen.'),
+    lastHealth ? healthStatusCard(lastHealth) : h('p', { class: 'hint' }, 'Noch keine Health-Daten empfangen.'),
     seenTypes.length ? [h('p', { class: 'hint' }, 'Workout-Typen zuordnen (Health-Workouts ersetzen manuelle Einträge derselben Art):'),
       h('div', { class: 'rows' }, mapRows)] : null,
   );
@@ -1509,6 +1509,19 @@ function cachedDates(dir) {
   return [...set].filter(has).sort();
 }
 const allDates = () => cachedDates('days');
+
+/** Was zuletzt aus Apple Health angekommen ist – zum Prüfen, ob der Kurzbefehl funktioniert. */
+function healthStatusCard(date) {
+  const f = Store.get(healthPath(date));
+  const hl = getHealth(date);
+  const row = (label, value) => h('div', { class: 'kv' }, h('span', {}, label), h('span', {}, value));
+  return h('div', { class: 'card' },
+    row('Letzte Health-Daten', `${formatDateLong(date)}`),
+    f && f.data && f.data.invalid ? row('Status', 'Datei unlesbar') : null,
+    row('Schritte', hl && hl.steps != null ? fmtNum(hl.steps) : 'fehlt'),
+    row('Gewicht', hl && hl.weight != null ? `${fmtNum(hl.weight, 1)} kg` : 'fehlt'),
+    row('Schlaf', hl && hl.sleepMin != null ? fmtDuration(hl.sleepMin) : 'fehlt'));
+}
 
 /** Link zur Kurzbefehl-Anleitung im App-Repo. */
 function shortcutGuideUrl() {
