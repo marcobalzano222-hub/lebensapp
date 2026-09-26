@@ -183,17 +183,9 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 .dayhead .date-btn small.past { color: var(--accent); }
 
 .controls { display: flex; gap: 8px; align-items: center; margin: 8px 0 12px; }
-.segmented {
-  display: inline-flex; padding: 3px; gap: 3px;
-  background: var(--surface-2); border-radius: 11px;
-}
-.segmented button {
-  border: 0; background: transparent; border-radius: 8px;
-  min-height: 34px; padding: 0 14px; font-size: 14px; color: var(--muted);
-}
-.segmented button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.controls .progress { flex: 1; }
 .pause-btn {
-  margin-left: auto;
+  flex: none;
   border: 1px solid var(--line); background: transparent; border-radius: 11px;
   min-height: 40px; padding: 0 12px; font-size: 14px; color: var(--muted);
 }
@@ -204,7 +196,21 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1
 .progress { height: 3px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
 .progress > i { display: block; height: 100%; background: var(--accent); }
 
-.checkin.paused > .block { opacity: .45; }
+.checkin.paused > .group, .checkin.paused > .block { opacity: .45; }
+
+/* Abschnitte der Tagesansicht */
+.group { margin-top: 10px; border-top: 1px solid var(--line); }
+.group-head {
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  min-height: var(--tap); padding: 10px 0; border: 0; background: transparent; text-align: left;
+}
+.group-title { font-size: 15px; font-weight: 650; }
+.group-sum { margin-left: auto; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chev { color: var(--muted); font-size: 18px; transform: rotate(90deg); transition: transform .15s; }
+.group.closed .chev { transform: none; }
+.group-body { padding-bottom: 12px; }
+.group-body > .block:first-child { margin-top: 0; }
+.tiles.spaced { margin-top: 10px; }
 .paused-note { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
 
 .block { margin-top: 18px; }

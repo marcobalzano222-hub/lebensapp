@@ -29,7 +29,7 @@ Workouts sind (noch) nicht dabei: Der eingebaute Kurzbefehl kann den Workout-Typ
    Bei der Frage, ob Daten an `api.github.com` gesendet werden dürfen → **Immer erlauben**.
 3. Lebensapp öffnen → **Setup → Apple Health**: Dort steht jetzt „Letzte Health-Daten: …“ mit dem gestrigen Datum.
 
-Danach unter **Setup → Apple Health** auf **„Kurzbefehl ist installiert“** tippen. Fehlen morgens die Daten von gestern, zeigt der Morgen-Check-in dann einen Knopf **„♥ Apple-Health-Daten von gestern holen“**.
+Danach unter **Setup → Apple Health** auf **„Kurzbefehl ist installiert“** tippen. Fehlen die Daten von gestern, zeigt der Reiter **Heute** dann oben einen Knopf **„♥ Apple-Health-Daten von gestern holen“**.
 
 ## 3. Automatisch jeden Morgen (optional)
 
@@ -37,11 +37,11 @@ Danach unter **Setup → Apple Health** auf **„Kurzbefehl ist installiert“**
 2. **Tageszeit** → `09:00` · *Täglich* → **Sofort ausführen**, *Bei Ausführung benachrichtigen* aus.
 3. **Weiter** → **Lebensapp-Health** auswählen.
 
-> iOS gibt Health-Daten nur heraus, wenn das iPhone entsperrt ist. Läuft die Automation bei gesperrtem Handy, kommen keine Daten an. Dafür gibt es den Knopf im Morgen-Check-in.
+> iOS gibt Health-Daten nur heraus, wenn das iPhone entsperrt ist. Läuft die Automation bei gesperrtem Handy, kommen keine Daten an. Dafür gibt es den Knopf im Reiter Heute.
 
 ## 4. Gewicht aus Health verwenden
 
-**Setup → Kennzahlen → Gewicht → Quelle: Apple Health.** Dann verschwindet das Gewicht aus dem Morgen-Check-in und kommt nur noch von der Waage.
+**Setup → Kennzahlen → Gewicht → Quelle: Apple Health.** Dann verschwindet das Gewicht aus dem Reiter Heute und kommt nur noch von der Waage.
 
 ---
 

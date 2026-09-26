@@ -729,11 +729,6 @@ function refreshFromRemote() {
 // Zeitfenster und Tageszuordnung
 // ============================================================
 
-function inWindow(m, w) {
-  const s = toMin(w.start), e = toMin(w.end);
-  return s <= e ? m >= s && m <= e : m >= s || m <= e;
-}
-
 /** Logisches „Heute“: Bis zum Ende des Abendfensters (z. B. 05:59) zählt noch der Vortag. */
 function logicalToday(now = new Date()) {
   const today = ymd(now);
@@ -744,13 +739,6 @@ function logicalToday(now = new Date()) {
   return today;
 }
 
-/** Aktueller Check-in nach Uhrzeit. */
-function currentSlot(now = new Date()) {
-  if (!config) return 'morning';
-  const m = nowMin(now);
-  if (inWindow(m, config.windows.morning)) return 'morning';
-  return 'evening';
-}
 
 // ============================================================
 // Ansichten
@@ -944,10 +932,6 @@ function viewSetup() {
       commitConfig('targets');
     }, { placeholder: 'kein Ziel' })));
 
-  // Tagesablauf
-  const timeField = (w, k, label) => h('label', { class: 'field' }, h('span', {}, label),
-    h('input', { type: 'time', value: c.windows[w][k], onchange: (e) => { if (e.target.value) { c.windows[w][k] = e.target.value; commitConfig('windows'); } } }));
-
   // Pause-Modi
   const pauseRows = c.pauseModes.map((p) => h('div', { class: 'row' },
     textEl(p.name, (v) => { if (v.trim()) { p.name = v.trim(); commitConfig('pauseModes'); } }, { 'aria-label': 'Name des Pause-Modus' })));
@@ -1024,11 +1008,10 @@ function viewSetup() {
       commitConfig('meals');
     }),
 
-    h('h2', {}, 'Tagesablauf'),
-    h('div', { class: 'pair' },
-      timeField('morning', 'start', 'Morgen ab'), timeField('morning', 'end', 'Morgen bis'),
-      timeField('evening', 'start', 'Abend ab'), timeField('evening', 'end', 'Abend bis')),
-    h('p', { class: 'hint' }, 'Einträge vor dem Ende des Abendfensters (z. B. 00:30) zählen zum Vortag.'),
+    h('h2', {}, 'Tageswechsel'),
+    h('label', { class: 'field' }, h('span', {}, 'Einträge bis einschließlich … zählen noch zum Vortag'),
+      h('input', { type: 'time', value: c.windows.evening.end, onchange: (e) => { if (e.target.value) { c.windows.evening.end = e.target.value; commitConfig('windows'); } } })),
+    h('p', { class: 'hint' }, 'Standard 05:59: Wer nach Mitternacht noch etwas einträgt, landet beim richtigen Tag. „Morgen/Abend“ bei Gewohnheiten und Kennzahlen bestimmt nur die Reihenfolge.'),
 
     h('h2', {}, 'Pause-Modi'),
     h('div', { class: 'rows' }, pauseRows),
@@ -1062,7 +1045,7 @@ function viewSetup() {
 
 // ---------- Heute ----------
 
-const todayUi = { date: null, slot: null, pauseOpen: false, trainOpen: null, ensured: null };
+const todayUi = { date: null, pauseOpen: false, trainOpen: null, ensured: null };
 
 const byPrio = (list) => list.map((x, i) => [x, i]).sort((a, b) => (a[0].prio || 1) - (b[0].prio || 1) || a[1] - b[1]).map((x) => x[0]);
 const habitDate = (hb, date) => (hb.refersTo === 'previousDay' ? addDays(date, -1) : date);
@@ -1079,24 +1062,59 @@ function lastMetricValue(id, date, maxDays = 90) {
   return null;
 }
 
-function slotItems(slot) {
+/** Alles für einen Tag: Morgen-Einträge zuerst, innerhalb nach Priorität. */
+const slotOrder = (x) => (x.slot === 'evening' ? 1 : 0);
+function dayItems() {
+  const sorted = (list) => byPrio(list).sort((a, b) => ((a.prio || 1) - (b.prio || 1)) || (slotOrder(a) - slotOrder(b)));
   return {
-    habits: byPrio(config.habits.filter((x) => isActive(x) && x.slot === slot)),
-    metrics: byPrio(config.metrics.filter((x) => showMetric(x) && x.slot === slot)),
+    habits: sorted(config.habits.filter(isActive)),
+    metrics: sorted(config.metrics.filter(showMetric)),
   };
 }
 
-function progressOf(date, slot) {
-  const { habits, metrics } = slotItems(slot);
-  const total = habits.length + metrics.length;
-  if (!total) return 0;
-  const done = habits.filter((x) => habitValue(x, date) !== undefined).length
-    + metrics.filter((x) => metricValue(x, date) != null).length;
-  return done / total;
+/** Abschnitte der Tagesansicht mit Zähler „erledigt / gesamt“. */
+function sectionCounts(date) {
+  const { habits, metrics } = dayItems();
+  const count = (list, has) => ({ done: list.filter(has).length, total: list.length });
+  const mHas = (m) => metricValue(m, date) != null;
+  return {
+    measures: count(metrics.filter((m) => m.type !== 'scale10'), mHas),
+    habits: count(habits, (x) => habitValue(x, date) !== undefined),
+    mood: count(metrics.filter((m) => m.type === 'scale10'), mHas),
+  };
 }
-function updateProgress(date, slot) {
+
+function progressOf(date) {
+  const c = Object.values(sectionCounts(date));
+  const total = c.reduce((a, x) => a + x.total, 0);
+  return total ? c.reduce((a, x) => a + x.done, 0) / total : 0;
+}
+function updateProgress(date) {
   const bar = $('#progress > i');
-  if (bar) bar.style.width = `${Math.round(progressOf(date, slot) * 100)}%`;
+  if (bar) bar.style.width = `${Math.round(progressOf(date) * 100)}%`;
+  const counts = sectionCounts(date);
+  for (const [id, c] of Object.entries(counts)) {
+    const el = document.querySelector(`[data-count="${id}"]`);
+    if (el) el.textContent = countLabel(c);
+  }
+}
+const countLabel = (c) => (c.total && c.done >= c.total ? '✓' : `${c.done}/${c.total}`);
+
+// Eingeklappte Abschnitte merken (nur auf diesem Gerät)
+const collapsed = new Set(LS.get('la.ui.collapsed', []));
+
+function section(id, title, summary, content) {
+  if (!content || (Array.isArray(content) && !content.filter(Boolean).length)) return null;
+  const isOpen = !collapsed.has(id);
+  return h('section', { class: `group${isOpen ? '' : ' closed'}` },
+    h('button', {
+      type: 'button', class: 'group-head', 'aria-expanded': isOpen ? 'true' : 'false',
+      onclick: () => { if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id); LS.set('la.ui.collapsed', [...collapsed]); softRender(); },
+    },
+      h('span', { class: 'group-title' }, title),
+      h('span', { class: 'group-sum', 'data-count': summary && summary.countId ? summary.countId : null }, summary ? summary.text : ''),
+      h('span', { class: 'chev', 'aria-hidden': 'true' }, '›')),
+    isOpen ? h('div', { class: 'group-body' }, content) : null);
 }
 
 function setHabit(hb, date, value) {
@@ -1240,7 +1258,6 @@ function trainingBlock(date, day) {
   };
   const open = types.find((t) => t.id === todayUi.trainOpen);
   return h('div', { class: 'block' },
-    h('p', { class: 'block-title' }, h('span', {}, 'Training')),
     h('div', { class: 'train-tiles' }, types.map((t) => h('button', {
       type: 'button', class: `tile${summary(t) ? ' on' : ''}${open === t ? ' open' : ''}`,
       onclick: () => {
@@ -1306,7 +1323,6 @@ function mealsBlock(date, day) {
     `${label} `, h('b', {}, fmtNum(sum[key]), unit),
     t[key] != null ? h('span', { class: 'of' }, ` / ${fmtNum(t[key])}${unit}`) : null);
   return h('div', { class: 'block' },
-    h('p', { class: 'block-title' }, h('span', {}, 'Mahlzeiten')),
     meals.length ? h('div', { class: 'meals' }, meals.map((m) => h('div', { class: `meal${counts[m.id] ? ' on' : ''}` },
       h('button', { type: 'button', class: 'meal-add', onclick: () => changeMeal(date, m, 1) },
         m.name, h('small', {}, `${fmtNum(m.kcal)} kcal · ${fmtNum(m.protein)} g P · ${fmtNum(m.carbs)} g KH`)),
@@ -1337,9 +1353,9 @@ function attachSwipe(el, onLeft, onRight) {
   }, { passive: true });
 }
 
-/** Morgens: Kurzbefehl starten, wenn die Health-Daten von gestern noch fehlen. */
-function healthButton(date, today, slot) {
-  if (!config.health.shortcut || date !== today || slot !== 'morning') return null;
+/** Kurzbefehl starten, wenn die Health-Daten von gestern noch fehlen. */
+function healthButton(date, today) {
+  if (!config.health.shortcut || date !== today) return null;
   if (Store.get(healthPath(addDays(today, -1)))) return null;
   return h('div', { class: 'block' }, h('a', {
     class: 'btn block health-btn', href: `shortcuts://run-shortcut?name=${encodeURIComponent('Lebensapp-Health')}`,
@@ -1350,7 +1366,6 @@ function viewToday() {
   const today = logicalToday();
   if (todayUi.date && todayUi.date >= today) todayUi.date = null;
   const date = todayUi.date || today;
-  const slot = todayUi.slot || currentSlot();
   const day = Object.assign(emptyDay(date), getDay(date) || {});
   const paused = day.pause ? config.pauseModes.find((p) => p.id === day.pause) || { id: day.pause, name: day.pause } : null;
 
@@ -1364,13 +1379,19 @@ function viewToday() {
   const yesterday = addDays(today, -1);
   const sub = date === today ? 'Heute' : `${date === yesterday ? 'Gestern' : `vor ${Math.round((parseYmd(today) - parseYmd(date)) / 86400000)} Tagen`} · Tippen für heute`;
 
-  const { habits, metrics } = slotItems(slot);
-  const p1Metrics = metrics.filter((m) => (m.prio || 1) === 1);
-  const p2Metrics = metrics.filter((m) => (m.prio || 1) !== 1);
+  const { habits, metrics } = dayItems();
+  const measures = metrics.filter((m) => m.type !== 'scale10');
+  const moods = metrics.filter((m) => m.type === 'scale10');
   const p1Habits = habits.filter((x) => (x.prio || 1) === 1);
   const p2Habits = habits.filter((x) => (x.prio || 1) !== 1);
-  const bigFirst = (list) => list.filter((m) => m.type !== 'scale10');
-  const scales = (list) => list.filter((m) => m.type === 'scale10');
+  const counts = sectionCounts(date);
+  const countSum = (id) => ({ countId: id, text: countLabel(counts[id]) });
+
+  const nutrition = nutritionOf(day);
+  const training = trainingFor(date);
+  const trainingSum = training.length
+    ? [...new Set(training.map((e) => (config.training.find((t) => t.id === e.id) || { name: e.id }).name))].join(', ')
+    : '–';
 
   const root = h('div', {},
     h('div', { class: 'dayhead' },
@@ -1381,11 +1402,7 @@ function viewToday() {
       h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Nächster Tag', disabled: date === today, onclick: () => go(addDays(date, 1)) }, '›')),
 
     h('div', { class: 'controls' },
-      h('div', { class: 'segmented', role: 'group', 'aria-label': 'Check-in' },
-        ['morning', 'evening'].map((s) => h('button', {
-          type: 'button', class: slot === s ? 'on' : '', 'aria-pressed': slot === s ? 'true' : 'false',
-          onclick: () => { todayUi.slot = s === currentSlot() ? null : s; todayUi.trainOpen = null; render(); },
-        }, SLOT_LABEL[s]))),
+      h('div', { class: 'progress', id: 'progress', role: 'presentation' }, h('i', { style: `width:${Math.round(progressOf(date) * 100)}%` })),
       config.pauseModes.length ? h('button', {
         type: 'button', class: `pause-btn${paused ? ' on' : ''}`,
         onclick: () => { todayUi.pauseOpen = !todayUi.pauseOpen; render(); },
@@ -1398,18 +1415,18 @@ function viewToday() {
       }, p.name)),
       paused ? h('button', { type: 'button', class: 'btn', onclick: () => { updateDay(date, (d) => { d.pause = null; }); todayUi.pauseOpen = false; render(); } }, 'Keine Pause') : null) : null,
 
-    h('div', { class: 'progress', id: 'progress', role: 'presentation' }, h('i', { style: `width:${Math.round(progressOf(date, slot) * 100)}%` })),
-
     h('div', { class: `checkin${paused ? ' paused' : ''}` },
       paused ? h('p', { class: 'paused-note' }, 'Pause-Tag: zählt nicht in Durchschnitte und Wochenziele. Eingaben sind trotzdem möglich.') : null,
-      bigFirst(p1Metrics).map((m) => metricBlock(m, date, slot)),
-      slot === 'evening' ? [mealsBlock(date, day), trainingBlock(date, day)] : null,
-      healthButton(date, today, slot),
-      p1Habits.length ? h('div', { class: 'block' }, h('div', { class: 'tiles' }, p1Habits.map((x) => boolTile(x, date, slot, false)))) : null,
-      scales(p1Metrics).map((m) => metricBlock(m, date, slot)),
-      p2Habits.length ? h('div', { class: 'block' }, h('div', { class: 'tiles compact' }, p2Habits.map((x) => boolTile(x, date, slot, true)))) : null,
-      p2Metrics.map((m) => metricBlock(m, date, slot)),
-      !habits.length && !metrics.length && slot === 'morning' ? h('p', { class: 'empty-note' }, 'Für den Morgen ist nichts eingerichtet.') : null,
+      healthButton(date, today),
+      section('measures', 'Messwerte', countSum('measures'), measures.map((m) => metricBlock(m, date))),
+      section('habits', 'Gewohnheiten', countSum('habits'), [
+        p1Habits.length ? h('div', { class: 'tiles' }, p1Habits.map((x) => boolTile(x, date, null, false))) : null,
+        p2Habits.length ? h('div', { class: `tiles compact${p1Habits.length ? ' spaced' : ''}` }, p2Habits.map((x) => boolTile(x, date, null, true))) : null,
+      ]),
+      section('food', 'Ernährung', { text: nutrition.any ? `${fmtNum(nutrition.kcal)} kcal` : '–' }, mealsBlock(date, day)),
+      section('training', 'Training', { text: trainingSum }, trainingBlock(date, day)),
+      section('mood', 'Befinden', countSum('mood'), moods.map((m) => metricBlock(m, date))),
+      !habits.length && !metrics.length ? h('p', { class: 'empty-note' }, 'Noch nichts eingerichtet – siehe Setup.') : null,
     ));
 
   attachSwipe(root, () => { if (date < today) go(addDays(date, 1)); }, () => go(addDays(date, -1)));
@@ -1810,10 +1827,10 @@ function init() {
   window.addEventListener('online', () => { Sync.offline = false; Sync.flush(); });
   window.addEventListener('offline', () => { Sync.offline = true; updateDot(); });
   // Morgen/Abend-Wechsel und Tageswechsel auch bei offener App.
-  let clockKey = config ? logicalToday() + currentSlot() : '';
+  let clockKey = config ? logicalToday() : '';
   setInterval(() => {
     if (!config) return;
-    const k = logicalToday() + currentSlot();
+    const k = logicalToday();
     if (k !== clockKey) { clockKey = k; if (ui.tab === 'today') softRender(); }
   }, 60 * 1000);
 
@@ -1826,7 +1843,7 @@ function init() {
 
 /** Nach Rückkehr in die App: automatischen Check-in und „Heute“ neu bestimmen. */
 function onResume(reset) {
-  if (reset) Object.assign(todayUi, { date: null, slot: null, pauseOpen: false, trainOpen: null });
+  if (reset) Object.assign(todayUi, { date: null, pauseOpen: false, trainOpen: null });
   softRender();
 }
 

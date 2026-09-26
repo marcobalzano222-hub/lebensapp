@@ -51,14 +51,14 @@ Ein iOS-Kurzbefehl kann täglich Schritte, Schlaf, Gewicht und Workouts aus Appl
 
 | Reiter | Inhalt |
 |---|---|
-| **Heute** | Morgen- bzw. Abend-Check-in (wechselt automatisch nach Tageszeit). Wischen nach rechts = Vortag, nach links = zurück Richtung heute; Tap auf das Datum = heute. |
+| **Heute** | Der ganze Tag auf einer Seite, gruppiert in Messwerte, Gewohnheiten, Ernährung, Training und Befinden. Abschnitte lassen sich per Tap einklappen; rechts steht, wie viel schon erledigt ist. Wischen nach rechts = Vortag, nach links = zurück Richtung heute; Tap auf das Datum = heute. |
 | **Woche** | Wochenziele Training, Gewohnheiten-Raster, Wochenschnitt mit kleinen 8-Wochen-Verläufen. Wischen = andere Wochen. |
 | **Setup** | Alles aus `config.json`. |
 | **Sync** | Verbindungsstatus, „Jetzt synchronisieren“, Export (JSON/CSV) über das Teilen-Menü, Token entfernen. |
 
 - **Kachel antippen** = erledigt, nochmal = zurück. **Lange drücken** = ausdrücklich „nicht gemacht“.
 - **Blutdruck und Gewicht** sind mit dem letzten Wert vorbelegt (grau). „Übernehmen“ oder mit −/+ korrigieren; Tap auf die Zahl öffnet den Ziffernblock.
-- **Nach Mitternacht:** Einträge bis zum Ende des Abendfensters (Standard 05:59) zählen zum Vortag.
+- **Nach Mitternacht:** Einträge bis 05:59 (einstellbar unter Setup → Tageswechsel) zählen zum Vortag.
 - **Pause** (z. B. krank, Reise): Der Tag zählt nicht in Durchschnitte und Wochenziele. Eingaben bleiben möglich.
 - **Sync-Punkt oben rechts:** grün = synchron, gelb = ausstehend/offline, rot = Fehler (Details im Reiter Sync).
 
@@ -77,7 +77,7 @@ lebensapp-data-<name>/
 ```
 
 - Nicht erfasste Werte fehlen in der Datei; `false` heißt „nicht gemacht“.
-- `refersTo: "previousDay"` (z. B. „Kein Handy vorm Schlafen“) wird morgens eingegeben, aber in der Datei des Vortags gespeichert.
+- `refersTo: "previousDay"` (z. B. „Kein Handy vorm Schlafen“) wird am nächsten Tag eingegeben, aber in der Datei des Vortags gespeichert.
 - Mahlzeiten speichern zusätzlich `mealsSnapshot` mit den Makros zum Zeitpunkt der Eingabe.
 - Deaktivieren im Setup löscht nichts (`active: false`); IDs bleiben beim Umbenennen stabil.
 
