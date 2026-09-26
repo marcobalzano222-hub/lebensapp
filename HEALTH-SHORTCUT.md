@@ -60,16 +60,17 @@ Schick einen Screenshot der Fehlermeldung (ohne Token). Häufige Ursachen:
 ## Technisches
 
 - Die Datei wird aus [`tools/build_health_shortcut.py`](tools/build_health_shortcut.py) erzeugt und auf einem Mac mit `shortcuts sign --mode anyone` signiert. Token und Repo sind nicht enthalten; sie werden beim Hinzufügen abgefragt.
-- Format von `health/JJJJ-MM-TT.json` (alle Werte als Text):
+- Format von `health/JJJJ-MM-TT.json` (alle Werte als Text, eine Zeile pro Messung):
 
 ```json
 {
   "date": "2026-10-01",
   "source": "shortcut",
-  "steps": "8423",
-  "weight": "82,1",
-  "sleep": "Kern|2026-09-30T23:30:00+02:00|2026-10-01T02:00:00+02:00\nREM|…"
+  "steps": "2026-10-01T00:00:00+02:00|8423",
+  "weight": "2026-10-01T07:12:00+02:00|82,1",
+  "sleep": "Kern|2026-09-30T23:30:00+02:00|2026-10-01T02:00:00+02:00\nREM|…",
+  "debug": "tag=… schrittSamples=… schlafSamples=…"
 }
 ```
 
-`sleep` enthält eine Zeile pro Schlafphase (`Wert|Start|Ende`). Die App bildet daraus die Schlafdauer, ohne Überschneidungen doppelt zu zählen, und ignoriert „Im Bett“ und „Wach“. Optional versteht die App auch `workouts` als Zeilen `Typ|Start|Minuten`.
+iOS filtert „Startdatum ist zwischen“ nur tageweise. Deshalb liefert der Kurzbefehl Zeitstempel mit, und die App wählt selbst aus: Schritte des Tages (von iOS pro Tag gruppiert, ohne Doppelzählung iPhone/Watch), die letzte Gewichtsmessung des Tages und die Schlafphasen, die zwischen 18:00 am Vortag und 12:00 beginnen. „Im Bett“ und „Wach“ zählen nicht als Schlaf; Überschneidungen werden nicht doppelt gezählt. `debug` enthält Zeitfenster und Anzahl gefundener Messungen zur Fehlersuche. Optional versteht die App auch `workouts` als Zeilen `Typ|Start|Minuten`.

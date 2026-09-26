@@ -292,9 +292,13 @@ function healthLines(v, keys) {
 const ASLEEP_EXCLUDE = /bett|bed|wach|awake/i;
 
 /** Schlafminuten: Vereinigung aller Schlaf-Intervalle (keine Doppelzählung iPhone + Watch). */
-function sleepMinutes(samples) {
+function sleepMinutes(samples, date) {
+  // Nur die Nacht, die am Morgen von date endet: Beginn zwischen 18:00 am Vortag und 12:00.
+  const from = date ? parseYmd(addDays(date, -1)).setHours(18, 0, 0, 0) : -Infinity;
+  const to = date ? parseYmd(date).setHours(12, 0, 0, 0) : Infinity;
   const iv = samples
     .filter((s) => !ASLEEP_EXCLUDE.test(s.value || ''))
+    .filter((s) => { const t = Date.parse(s.start); return !Number.isFinite(t) || (t >= from && t < to); })
     .map((s) => [Date.parse(s.start), Date.parse(s.end)])
     .filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b) && b > a)
     .sort((x, y) => x[0] - y[0]);
@@ -319,13 +323,22 @@ function getHealth(date) {
   const workouts = healthLines(raw.workouts, ['type', 'start', 'min'])
     .map((w) => ({ type: String(w.type || '').trim(), start: w.start || null, min: Math.round(looseNum(w.min ?? w.minutes ?? w.duration) || 0) }))
     .filter((w) => w.type);
-  const weight = looseNum(raw.weight);
-  const steps = looseNum(raw.steps);
+  // Neues Format: Zeilen „Start|Wert“ – nur Werte, die an date begonnen haben, zählen.
+  const onDate = (v) => {
+    if (typeof v !== 'string' || !v.includes('|')) return null;
+    return healthLines(v, ['start', 'value'])
+      .map((x) => ({ t: Date.parse(x.start), v: looseNum(x.value) }))
+      .filter((x) => Number.isFinite(x.t) && x.v != null && ymd(new Date(x.t)) === date)
+      .sort((a, b) => a.t - b.t);
+  };
+  const stepLines = onDate(raw.steps), weightLines = onDate(raw.weight);
+  const weight = weightLines ? (weightLines.length ? weightLines[weightLines.length - 1].v : null) : looseNum(raw.weight);
+  const steps = stepLines ? (stepLines.length ? stepLines.reduce((a, x) => a + x.v, 0) : null) : looseNum(raw.steps);
   const parsed = {
     date,
     steps: steps != null && steps > 0 ? Math.round(steps) : null,
     weight: weight != null && weight > 0 ? round(weight, 1) : null,
-    sleepMin: raw.sleepMin != null ? looseNum(raw.sleepMin) : sleepMinutes(sleep),
+    sleepMin: raw.sleepMin != null ? looseNum(raw.sleepMin) : sleepMinutes(sleep, date),
     workouts,
   };
   healthCache.set(date, { sha: f.sha, raw: f.data, parsed });

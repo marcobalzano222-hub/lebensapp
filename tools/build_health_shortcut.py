@@ -90,7 +90,7 @@ def adjust(src, name, op, amount=1, unit='days'):
                WFDuration={'Value': {'Magnitude': amount, 'Unit': unit}, 'WFSerializationType': 'WFQuantityFieldValue'})
 
 
-def find_health(kind, start, end, name, latest_one=False):
+def find_health(kind, start, end, name, latest_one=False, group_by_day=False):
     rows = [
         {'Bounded': True, 'Operator': 4, 'Property': 'Type', 'Removable': False,
          'Values': {'Enumeration': {'Value': kind, 'WFSerializationType': 'WFStringSubstitutableState'}}},
@@ -101,6 +101,8 @@ def find_health(kind, start, end, name, latest_one=False):
         'Value': {'WFActionParameterFilterPrefix': 1, 'WFContentPredicateBoundedDate': False,
                   'WFActionParameterFilterTemplates': rows},
         'WFSerializationType': 'WFContentPredicateTableTemplate'})
+    if group_by_day:
+        params['WFHKSampleFilteringGroupBy'] = 'Day'
     if latest_one:
         params.update(WFContentItemSortProperty='Start Date', WFContentItemSortOrder='Latest First',
                       WFContentItemLimitEnabled=True, WFContentItemLimitNumber=1)
@@ -138,7 +140,7 @@ def github_request(method, url_parts, token, body=None):
 token = act('gettext', CustomOutputName='Token', WFTextActionText='github_pat_…')
 repo = act('gettext', CustomOutputName='Repo', WFTextActionText='marcobalzano222-hub/lebensapp-data-satoshi')
 
-comment('Lebensapp Health: schreibt Schritte, Gewicht und Schlaf des Vortags als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
+comment('Lebensapp Health (Version 2): schreibt Schritte, Gewicht und Schlaf des Vortags als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
 
 now = act('date', CustomOutputName='Jetzt', WFDateActionMode='Current Date')
 yesterday = adjust(now, 'Gestern', 'Subtract', 1, 'days')
@@ -147,17 +149,21 @@ day_end = adjust(day, 'Tagesende', 'Add', 1, 'days')
 sleep_start = adjust(day, 'Schlaf ab', 'Subtract', 6, 'hr')
 sleep_end = adjust(day, 'Schlaf bis', 'Add', 12, 'hr')
 
-comment('Schritte: Summe des Vortags')
-steps_found = find_health('Steps', (day, 'Tag'), (day_end, 'Tagesende'), 'Schritt-Samples')
-step_values = act('properties.health.quantity', CustomOutputName='Schritt-Werte', WFContentItemPropertyName='Value',
-                  WFInput=attach(out(steps_found, 'Schritt-Samples')))
-steps = act('statistics', CustomOutputName='Schritte', WFStatisticsOperation='Sum',
-            WFInput=attach(out(step_values, 'Schritt-Werte')))
+comment('Schritte: pro Tag gruppiert (iOS rechnet doppelte iPhone-/Watch-Schritte heraus). Die App nimmt die Zeile des Vortags.')
+steps_found = find_health('Steps', (day, 'Tag'), (day_end, 'Tagesende'), 'Schritt-Samples', group_by_day=True)
+steps = lines_of(steps_found, 'Schritt-Samples', [
+    var('Repeat Item', prop('Start Date'), datefmt(ISO)),
+    var('Repeat Item', prop('Value')),
+], 'Schritte')
+
+comment('Gewicht: alle Messungen im Zeitraum. Die App nimmt die letzte Messung des Vortags.')
+weight_found = find_health('Weight', (day, 'Tag'), (day_end, 'Tagesende'), 'Gewicht-Samples')
+weight = lines_of(weight_found, 'Gewicht-Samples', [
+    var('Repeat Item', prop('Start Date'), datefmt(ISO)),
+    var('Repeat Item', prop('Value')),
+], 'Gewicht')
 step_count = act('count', CustomOutputName='Anzahl Schritt-Samples', WFCountType='Items',
                  WFInput=attach(out(steps_found, 'Schritt-Samples')), Input=attach(out(steps_found, 'Schritt-Samples')))
-
-comment('Gewicht: letzte Messung am Vortag')
-weight = find_health('Weight', (day, 'Tag'), (day_end, 'Tagesende'), 'Gewicht', latest_one=True)
 
 comment('Schlaf: alle Schlaf-Phasen der Nacht, die am Morgen des Vortags endet (die App rechnet die Dauer aus)')
 sleep_found = find_health('Sleep', (sleep_start, 'Schlaf ab'), (sleep_end, 'Schlaf bis'), 'Schlaf-Samples')
@@ -175,13 +181,13 @@ data = act('dictionary', CustomOutputName='Health-Daten', WFItems=fields([
     ('date', [day_str]),
     ('source', ['shortcut']),
     ('steps', [out(steps, 'Schritte')]),
-    ('weight', [out(weight, 'Gewicht', prop('Value'))]),
+    ('weight', [out(weight, 'Gewicht')]),
     ('sleep', [out(sleep, 'Schlaf')]),
     # Diagnose: Zeitfenster und Anzahl gefundener Messungen (die App ignoriert das Feld)
     ('debug', ['tag=', out(day, 'Tag', datefmt(ISO)), ' ende=', out(day_end, 'Tagesende', datefmt(ISO)),
                ' schlafAb=', out(sleep_start, 'Schlaf ab', datefmt(ISO)), ' schlafBis=', out(sleep_end, 'Schlaf bis', datefmt(ISO)),
                ' schrittSamples=', out(step_count, 'Anzahl Schritt-Samples'),
-               ' schlafSamples=', out(sleep_count, 'Anzahl Schlaf-Samples'), ' gewicht=', out(weight, 'Gewicht')]),
+               ' schlafSamples=', out(sleep_count, 'Anzahl Schlaf-Samples'),]),
 ]))
 content = act('base64encode', CustomOutputName='Inhalt', WFEncodeMode='Encode', WFBase64LineBreakMode='None',
               WFInput=attach(out(data, 'Health-Daten')))
