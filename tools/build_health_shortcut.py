@@ -154,7 +154,7 @@ step_values = act('properties.health.quantity', CustomOutputName='Schritt-Werte'
 steps = act('statistics', CustomOutputName='Schritte', WFStatisticsOperation='Sum',
             WFInput=attach(out(step_values, 'Schritt-Werte')))
 step_count = act('count', CustomOutputName='Anzahl Schritt-Samples', WFCountType='Items',
-                 WFInput=attach(out(steps_found, 'Schritt-Samples')))
+                 WFInput=attach(out(steps_found, 'Schritt-Samples')), Input=attach(out(steps_found, 'Schritt-Samples')))
 
 comment('Gewicht: letzte Messung am Vortag')
 weight = find_health('Weight', (day, 'Tag'), (day_end, 'Tagesende'), 'Gewicht', latest_one=True)
@@ -162,7 +162,7 @@ weight = find_health('Weight', (day, 'Tag'), (day_end, 'Tagesende'), 'Gewicht', 
 comment('Schlaf: alle Schlaf-Phasen der Nacht, die am Morgen des Vortags endet (die App rechnet die Dauer aus)')
 sleep_found = find_health('Sleep', (sleep_start, 'Schlaf ab'), (sleep_end, 'Schlaf bis'), 'Schlaf-Samples')
 sleep_count = act('count', CustomOutputName='Anzahl Schlaf-Samples', WFCountType='Items',
-                  WFInput=attach(out(sleep_found, 'Schlaf-Samples')))
+                  WFInput=attach(out(sleep_found, 'Schlaf-Samples')), Input=attach(out(sleep_found, 'Schlaf-Samples')))
 sleep = lines_of(sleep_found, 'Schlaf-Samples', [
     var('Repeat Item', prop('Value')),
     var('Repeat Item', prop('Start Date'), datefmt(ISO)),
