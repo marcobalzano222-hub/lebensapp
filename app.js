@@ -158,6 +158,8 @@ function normalizeConfig(c) {
   cfg.targets.daily = Object.assign({ kcal: null, protein: null, carbs: null }, cfg.targets.daily);
   cfg.targets.weekly = Object.assign({}, cfg.targets.weekly);
   for (const k of ['habits', 'metrics', 'training', 'meals', 'pauseModes']) if (!Array.isArray(cfg[k])) cfg[k] = [];
+  cfg.health = Object.assign({ workoutMap: {} }, cfg.health);
+  if (!cfg.health.workoutMap || typeof cfg.health.workoutMap !== 'object') cfg.health.workoutMap = {};
   return cfg;
 }
 
@@ -190,7 +192,7 @@ const mem = {};                       // Arbeitskopie der Dateien im Speicher
 let meta = null;                      // Sync-Metadaten für das aktuelle Repo
 
 function loadMeta() {
-  meta = Object.assign({ pending: {}, rev: 0, lastSync: null, lastError: null, index: null }, LS.get(`la.m:${repoKey()}`, {}));
+  meta = Object.assign({ pending: {}, rev: 0, lastSync: null, lastError: null, index: null, hindex: null }, LS.get(`la.m:${repoKey()}`, {}));
 }
 function saveMeta() { LS.set(`la.m:${repoKey()}`, meta); }
 
@@ -252,6 +254,125 @@ function updateDay(date, fn) {
   Store.change(dayPath(date), d);
 }
 
+// ---------- Apple Health (health/, geschrieben vom iOS-Kurzbefehl, nur lesen) ----------
+// Format des Kurzbefehls (alle Werte dürfen Text sein):
+// { date, source: "shortcut", steps, weight,
+//   sleep:    "Wert|Start ISO|Ende ISO\n…"   (Schlaf-Samples der Nacht, die am Morgen von date endet)
+//   workouts: "Typ|Start ISO|Minuten\n…" }   (Workouts, die an date begonnen haben)
+
+const healthPath = (date) => `health/${date}.json`;
+
+/** Zahl aus Text wie „8.423“, „82,4 kg“ oder 8423. */
+function looseNum(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (v == null) return null;
+  let t = String(v).replace(/[^\d.,-]/g, '');
+  if (!t) return null;
+  if (t.includes('.') && t.includes(',')) {
+    // Das letzte Trennzeichen ist das Dezimalzeichen.
+    t = t.lastIndexOf(',') > t.lastIndexOf('.') ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, '');
+  } else if (/^-?\d{1,3}(\.\d{3})+$/.test(t)) {
+    t = t.replace(/\./g, '');                     // „8.423“ = Tausenderpunkt
+  } else {
+    t = t.replace(',', '.');                      // „82,4“ = Dezimalkomma
+  }
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Zeilen „a|b|c“ oder schon eine Liste von Objekten. */
+function healthLines(v, keys) {
+  if (Array.isArray(v)) {
+    return v.map((x) => (typeof x === 'object' && x ? x : Object.fromEntries(String(x).split('|').map((p, i) => [keys[i], p.trim()]))));
+  }
+  if (typeof v !== 'string' || !v.trim()) return [];
+  return v.split(/\r?\n/).filter((l) => l.trim()).map((l) => Object.fromEntries(l.split('|').map((p, i) => [keys[i], p.trim()])));
+}
+
+const ASLEEP_EXCLUDE = /bett|bed|wach|awake/i;
+
+/** Schlafminuten: Vereinigung aller Schlaf-Intervalle (keine Doppelzählung iPhone + Watch). */
+function sleepMinutes(samples) {
+  const iv = samples
+    .filter((s) => !ASLEEP_EXCLUDE.test(s.value || ''))
+    .map((s) => [Date.parse(s.start), Date.parse(s.end)])
+    .filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b) && b > a)
+    .sort((x, y) => x[0] - y[0]);
+  let total = 0, cur = null;
+  for (const [a, b] of iv) {
+    if (!cur || a > cur[1]) { if (cur) total += cur[1] - cur[0]; cur = [a, b]; } else cur[1] = Math.max(cur[1], b);
+  }
+  if (cur) total += cur[1] - cur[0];
+  return iv.length ? Math.round(total / 60000) : null;
+}
+
+const healthCache = new Map();   // path → { sha, parsed }
+
+/** Aufbereitete Health-Daten eines Tages oder null. */
+function getHealth(date) {
+  const f = Store.get(healthPath(date));
+  if (!f || !f.data || f.data.invalid) return null;
+  const hit = healthCache.get(date);
+  if (hit && hit.sha === f.sha && hit.raw === f.data) return hit.parsed;
+  const raw = f.data;
+  const sleep = healthLines(raw.sleep, ['value', 'start', 'end']);
+  const workouts = healthLines(raw.workouts, ['type', 'start', 'min'])
+    .map((w) => ({ type: String(w.type || '').trim(), start: w.start || null, min: Math.round(looseNum(w.min ?? w.minutes ?? w.duration) || 0) }))
+    .filter((w) => w.type);
+  const weight = looseNum(raw.weight);
+  const steps = looseNum(raw.steps);
+  const parsed = {
+    date,
+    steps: steps != null && steps > 0 ? Math.round(steps) : null,
+    weight: weight != null && weight > 0 ? round(weight, 1) : null,
+    sleepMin: raw.sleepMin != null ? looseNum(raw.sleepMin) : sleepMinutes(sleep),
+    workouts,
+  };
+  healthCache.set(date, { sha: f.sha, raw: f.data, parsed });
+  return parsed;
+}
+
+/** Standard-Zuordnung der Apple-Watch-Workout-Typen (deutsch und englisch). */
+const WORKOUT_RULES = [
+  ['strength', /kraft|strength/i],
+  ['hit', /hiit|intervall|interval/i],
+  ['zone2', /geh|walk|lauf|run|rad|cycl|bike|wander|hik|ruder|row|ellip|crosstrain|schwimm|swim|stepper|treppe|stair/i],
+];
+
+/** Trainings-ID für einen Workout-Typ, 'ignore' oder null (nicht zugeordnet). */
+function mapWorkout(type) {
+  const map = (config.health && config.health.workoutMap) || {};
+  if (map[type]) return map[type] === 'ignore' ? 'ignore' : (config.training.some((t) => t.id === map[type]) ? map[type] : null);
+  return autoMapWorkout(type);
+}
+function autoMapWorkout(type) {
+  for (const [id, re] of WORKOUT_RULES) if (re.test(type) && config.training.some((t) => t.id === id && isActive(t))) return id;
+  return null;
+}
+
+/**
+ * Training eines Tages für die Auswertung. Pro Trainingsart gilt: Gibt es Health-Workouts
+ * dieser Art, zählen nur diese; sonst die manuellen Einträge (z. B. Sauna, oder heute,
+ * solange der Kurzbefehl noch nicht gelaufen ist).
+ */
+function trainingFor(date) {
+  const manual = ((getDay(date) || {}).training || []).map((e) => ({ ...e, source: 'manual' }));
+  const hl = getHealth(date);
+  const fromHealth = hl ? hl.workouts.map((w) => ({ id: mapWorkout(w.type), min: w.min || undefined, type: w.type, source: 'health' }))
+    .filter((w) => w.id && w.id !== 'ignore') : [];
+  const covered = new Set(fromHealth.map((w) => w.id));
+  return [...fromHealth, ...manual.filter((e) => !covered.has(e.id))];
+}
+
+/** Wert einer Kennzahl an einem Tag – bei Quelle „health“ aus Apple Health. */
+function metricOn(m, date) {
+  if (m.source === 'health') {
+    const hl = getHealth(date);
+    return hl && m.id === 'weight' ? hl.weight : null;
+  }
+  return ((getDay(date) || {}).metrics || {})[m.id];
+}
+
 // ============================================================
 // GitHub Contents API
 // ============================================================
@@ -311,7 +432,13 @@ const GH = {
     if (res.status === 404) return null;
     if (!res.ok) await GH.fail(res);
     const j = await res.json();
-    return { data: JSON.parse(b64decode(j.content)), sha: j.sha };
+    const text = b64decode(j.content);
+    try {
+      return { data: JSON.parse(text), sha: j.sha };
+    } catch {
+      // Ungültiges JSON (z. B. aus dem Kurzbefehl) soll den Sync nicht blockieren.
+      return { data: { invalid: true, raw: text.slice(0, 2000) }, sha: j.sha };
+    }
   },
   /** Verzeichnis auflisten → [{ name, sha }] (leer, wenn es fehlt). */
   async listDir(path) {
@@ -449,35 +576,42 @@ function updateDot() {
 
 // ---------- Laden aus dem Repo ----------
 
-/** Liste der Tagesdateien (Datum → sha) aktualisieren. */
+/** Liste der Tagesdateien (Datum → sha) für days/ und health/ aktualisieren. */
 async function refreshIndex() {
-  const files = await GH.listDir('days');
-  const index = {};
-  for (const f of files) {
-    const m = /^(\d{4}-\d{2}-\d{2})\.json$/.exec(f.name);
-    if (m) index[m[1]] = f.sha;
-  }
-  meta.index = index;
+  const toIndex = (files) => {
+    const index = {};
+    for (const f of files) {
+      const m = /^(\d{4}-\d{2}-\d{2})\.json$/.exec(f.name);
+      if (m) index[m[1]] = f.sha;
+    }
+    return index;
+  };
+  const [days, health] = await Promise.all([GH.listDir('days'), GH.listDir('health')]);
+  meta.index = toIndex(days);
+  meta.hindex = toIndex(health);
   saveMeta();
 }
 
-/** Alle Tage im Bereich laden, die im Repo neuer sind als der Cache. */
+/** Alle Tage (App und Health) im Bereich laden, die im Repo neuer sind als der Cache. */
 async function ensureDays(from, to) {
-  if (!meta.index) await refreshIndex();
-  const wanted = Object.keys(meta.index).filter((date) => {
-    if ((from && date < from) || (to && date > to)) return false;
-    const path = dayPath(date);
-    if (Store.isPending(path)) return false;
-    const cached = Store.get(path);
-    return !cached || cached.sha !== meta.index[date];
-  });
+  if (!meta.index || !meta.hindex) await refreshIndex();
+  const wanted = [];
+  for (const [index, pathOf] of [[meta.index, dayPath], [meta.hindex, healthPath]]) {
+    for (const date of Object.keys(index)) {
+      if ((from && date < from) || (to && date > to)) continue;
+      const path = pathOf(date);
+      if (Store.isPending(path)) continue;
+      const cached = Store.get(path);
+      if (!cached || cached.sha !== index[date]) wanted.push(path);
+    }
+  }
   let changed = false;
   const queue = [...wanted];
   const worker = async () => {
     while (queue.length) {
-      const date = queue.shift();
-      const f = await GH.getFile(dayPath(date));
-      if (f && !Store.isPending(dayPath(date))) { Store.put(dayPath(date), f.data, f.sha); changed = true; }
+      const path = queue.shift();
+      const f = await GH.getFile(path);
+      if (f && !Store.isPending(path)) { Store.put(path, f.data, f.sha); changed = true; }
     }
   };
   await Promise.all(Array.from({ length: Math.min(6, queue.length) }, worker));
@@ -691,7 +825,9 @@ function viewSetup() {
   const metricRows = c.metrics.map((it, i) => editRow(c.metrics, i, 'metrics', [
     slotSelect(it, 'metrics'),
     prioSelect(it, 'metrics'),
-    it.type === 'number'
+    it.id === 'weight' && it.type === 'number'
+      ? selectEl({ manual: 'Manuell', health: 'Apple Health' }, it.source || 'manual', (v) => { it.source = v; commitConfig('metrics', true); })
+      : it.type === 'number'
       ? textEl(it.unit, (v) => { it.unit = v.trim(); commitConfig('metrics'); }, { placeholder: 'Einheit', 'aria-label': 'Einheit', style: 'max-width:70px' })
       : h('span', { class: 'small muted' }, METRIC_TYPES[it.type] || it.type),
   ]));
@@ -744,6 +880,24 @@ function viewSetup() {
   const pauseRows = c.pauseModes.map((p) => h('div', { class: 'row' },
     textEl(p.name, (v) => { if (v.trim()) { p.name = v.trim(); commitConfig('pauseModes'); } }, { 'aria-label': 'Name des Pause-Modus' })));
   const newPause = h('input', { type: 'text', placeholder: 'Neuer Pause-Modus' });
+
+  // Apple Health
+  const healthDates = cachedDates('health');
+  const lastHealth = healthDates[healthDates.length - 1];
+  const seenTypes = [...new Set(healthDates.flatMap((d) => (getHealth(d) || { workouts: [] }).workouts.map((w) => w.type)))].sort();
+  const mapRows = seenTypes.map((type) => {
+    const auto = autoMapWorkout(type);
+    const autoName = auto ? (c.training.find((t) => t.id === auto) || {}).name : 'nicht gezählt';
+    const opts = { '': `Automatisch (${autoName})` };
+    for (const t of c.training.filter(isActive)) opts[t.id] = t.name;
+    opts.ignore = 'Ignorieren';
+    return h('div', { class: 'row' },
+      h('div', { class: 'row-main' }, h('span', {}, type)),
+      h('div', { class: 'row-opts' }, selectEl(opts, c.health.workoutMap[type] || '', (v) => {
+        if (v) c.health.workoutMap[type] = v; else delete c.health.workoutMap[type];
+        commitConfig('health');
+      })));
+  });
 
   return h('div', {},
     h('h1', {}, 'Setup'),
@@ -800,6 +954,14 @@ function viewSetup() {
       c.pauseModes.push({ id: slugId(name, c.pauseModes), name });
       commitConfig('pauseModes');
     }),
+
+    h('h2', {}, 'Apple Health'),
+    h('p', { class: 'hint' },
+      'Schritte, Schlaf, Gewicht und Workouts kommen täglich vom iOS-Kurzbefehl. ',
+      h('a', { href: shortcutGuideUrl(), target: '_blank', rel: 'noopener' }, 'Anleitung zum Kurzbefehl'), '.'),
+    h('p', { class: 'hint' }, lastHealth ? `Letzte Health-Daten: ${formatDateLong(lastHealth)}.` : 'Noch keine Health-Daten empfangen.'),
+    seenTypes.length ? [h('p', { class: 'hint' }, 'Workout-Typen zuordnen (Health-Workouts ersetzen manuelle Einträge derselben Art):'),
+      h('div', { class: 'rows' }, mapRows)] : null,
   );
 }
 
@@ -972,8 +1134,11 @@ function trainingBlock(date, day) {
     todayUi.trainOpen = null;
     softRender();
   };
+  const effective = trainingFor(date);
+  const fromHealth = effective.filter((e) => e.source === 'health');
+  const covered = new Set(fromHealth.map((e) => e.id));
   const summary = (t) => {
-    const mine = entries.filter((e) => e.id === t.id);
+    const mine = effective.filter((e) => e.id === t.id);
     if (!mine.length) return null;
     const min = mine.reduce((s, e) => s + (e.min || 0), 0);
     return min ? `${min} min` : `${mine.length}×`;
@@ -990,9 +1155,14 @@ function trainingBlock(date, day) {
     open ? h('div', { class: 'presets' },
       open.presetsMin.map((min) => h('button', { type: 'button', class: 'btn', onclick: () => add({ id: open.id, min }) }, `${min} min`)),
       open.type !== 'minutes' ? h('button', { type: 'button', class: 'btn', onclick: () => add({ id: open.id }) }, 'ohne Zeit') : null) : null,
-    entries.length ? h('div', { class: 'chips' }, entries.map((e, i) => {
+    fromHealth.length || entries.length ? h('div', { class: 'chips' }, fromHealth.map((e) => {
       const t = config.training.find((x) => x.id === e.id);
-      return h('span', { class: 'chip' },
+      return h('span', { class: 'chip health', title: `Apple Health: ${e.type}` },
+        h('span', {}, `♥ ${t ? t.name : e.id}${e.min ? ` ${e.min} min` : ''}`));
+    }), entries.map((e, i) => {
+      const t = config.training.find((x) => x.id === e.id);
+      const replaced = covered.has(e.id);
+      return h('span', { class: `chip${replaced ? ' replaced' : ''}`, title: replaced ? 'Durch Apple Health ersetzt – zählt nicht' : null },
         h('span', {}, `${t ? t.name : e.id}${e.min ? ` ${e.min} min` : ''}`),
         h('button', {
           type: 'button', 'aria-label': 'Entfernen',
@@ -1150,13 +1320,19 @@ const weekDates = (start) => Array.from({ length: 7 }, (_, i) => addDays(start, 
 const avg = (list) => (list.length ? list.reduce((a, b) => a + b, 0) / list.length : null);
 
 /** Nur Tage, die bewertet werden: nicht in der Zukunft, kein Pause-Tag. */
-function countedDays(dates) {
+function countedDates(dates) {
   const today = logicalToday();
-  return dates.filter((d) => d <= today).map((d) => getDay(d)).filter((d) => d && !d.pause);
+  return dates.filter((d) => d <= today && !(getDay(d) || {}).pause);
+}
+function countedDays(dates) {
+  return countedDates(dates).map((d) => getDay(d)).filter(Boolean);
 }
 
-function metricAvg(id, dates, pick = (v) => v) {
-  return avg(countedDays(dates).map((d) => (d.metrics || {})[id]).filter((v) => v != null).map(pick).filter((v) => typeof v === 'number'));
+function metricAvg(m, dates, pick = (v) => v) {
+  return avg(countedDates(dates).map((d) => metricOn(m, d)).filter((v) => v != null).map(pick).filter((v) => typeof v === 'number'));
+}
+function healthAvg(key, dates) {
+  return avg(countedDates(dates).map((d) => (getHealth(d) || {})[key]).filter((v) => typeof v === 'number' && v > 0));
 }
 
 function sparkline(series) {
@@ -1187,6 +1363,8 @@ function sparkline(series) {
   return svg;
 }
 
+const fmtDuration = (min) => { const t = Math.round(min); return `${Math.floor(t / 60)}:${pad2(t % 60)} h`; };
+
 function kpi(label, value, sub, spark) {
   return h('div', { class: 'kpi' },
     h('div', { class: 'label' }, label),
@@ -1208,7 +1386,7 @@ function viewWeek() {
   const goals = config.training.filter(isActive).map((t) => {
     const target = config.targets.weekly[weeklyKey(t)];
     if (target == null) return null;
-    const entries = days.flatMap((d) => (d.training || []).filter((e) => e.id === t.id));
+    const entries = countedDates(dates).flatMap((d) => trainingFor(d).filter((e) => e.id === t.id));
     const ist = t.type === 'minutes' ? entries.reduce((s, e) => s + (e.min || 0), 0) : entries.length;
     const pct = target > 0 ? Math.min(100, (ist / target) * 100) : 100;
     return h('div', { class: 'goal' },
@@ -1237,22 +1415,25 @@ function viewWeek() {
   for (const m of config.metrics.filter(isActive)) {
     if (m.type === 'number') {
       const decimals = m.decimals ?? 1;
-      const cur = metricAvg(m.id, dates), prev = metricAvg(m.id, weekDates(addDays(start, -7)));
+      const cur = metricAvg(m, dates), prev = metricAvg(m, weekDates(addDays(start, -7)));
       const diff = cur != null && prev != null ? round(cur, decimals) - round(prev, decimals) : null;
       kpis.push(kpi(`${m.name} Ø`, cur != null ? `${fmtNum(cur, decimals)}${m.unit ? ` ${m.unit}` : ''}` : '–',
         diff != null ? `${diff > 1e-9 ? '+' : diff < -1e-9 ? '−' : '±'}${fmtNum(Math.abs(diff), decimals)} zur Vorwoche` : null,
-        sparkline([weeks8.map((w) => metricAvg(m.id, w))])));
+        sparkline([weeks8.map((w) => metricAvg(m, w))])));
     } else if (m.type === 'bloodpressure') {
-      const sys = metricAvg(m.id, dates, (v) => v.sys), dia = metricAvg(m.id, dates, (v) => v.dia);
-      const pulse = metricAvg(m.id, dates, (v) => v.pulse);
+      const sys = metricAvg(m, dates, (v) => v.sys), dia = metricAvg(m, dates, (v) => v.dia);
+      const pulse = metricAvg(m, dates, (v) => v.pulse);
       kpis.push(kpi(`${m.name} Ø`, sys != null ? `${fmtNum(sys)}/${fmtNum(dia)}` : '–',
         pulse != null ? `Puls ${fmtNum(pulse)}` : null,
-        sparkline([weeks8.map((w) => metricAvg(m.id, w, (v) => v.sys)), weeks8.map((w) => metricAvg(m.id, w, (v) => v.dia))])));
+        sparkline([weeks8.map((w) => metricAvg(m, w, (v) => v.sys)), weeks8.map((w) => metricAvg(m, w, (v) => v.dia))])));
     } else if (m.type === 'scale10') {
-      const v = metricAvg(m.id, dates);
+      const v = metricAvg(m, dates);
       kpis.push(kpi(`${m.name} Ø`, v != null ? fmtNum(v, 1) : '–'));
     }
   }
+  const steps = healthAvg('steps', dates), sleep = healthAvg('sleepMin', dates);
+  if (steps != null) kpis.push(kpi('Schritte Ø', fmtNum(steps), null, sparkline([weeks8.map((w) => healthAvg('steps', w))])));
+  if (sleep != null) kpis.push(kpi('Schlaf Ø', fmtDuration(sleep), null, sparkline([weeks8.map((w) => healthAvg('sleepMin', w))])));
   const fed = days.map(nutritionOf).filter((n) => n.any);
   kpis.push(kpi('Ernährung Ø', fed.length ? `${fmtNum(avg(fed.map((n) => n.kcal)))} kcal` : '–',
     fed.length ? `${fmtNum(avg(fed.map((n) => n.protein)))} g Protein · ${fed.length} Tage` : null));
@@ -1297,22 +1478,36 @@ function loadAllDays() {
     .finally(() => { syncUi.loading = false; if (ui.tab === 'sync') softRender(); });
 }
 
-function allDates() {
-  const set = new Set(Object.keys(meta.index || {}));
+/** Alle bekannten Daten eines Ordners (Repo-Index, Cache, ausstehend), sortiert. */
+function cachedDates(dir) {
+  const set = new Set(Object.keys((dir === 'health' ? meta.hindex : meta.index) || {}));
   const prefix = `la.d:${repoKey()}:`;
   let cachedPaths = [];
   try { cachedPaths = Object.keys(localStorage).filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length)); } catch { /* egal */ }
+  const re = new RegExp(`^${dir}/(\\d{4}-\\d{2}-\\d{2})\\.json$`);
   for (const p of [...Object.keys(meta.pending), ...Object.keys(mem), ...cachedPaths]) {
-    const m = /^days\/(\d{4}-\d{2}-\d{2})\.json$/.exec(p);
+    const m = re.exec(p);
     if (m) set.add(m[1]);
   }
-  return [...set].filter((d) => getDay(d)).sort();
+  const has = dir === 'health' ? (d) => Store.get(healthPath(d)) : (d) => getDay(d);
+  return [...set].filter(has).sort();
+}
+const allDates = () => cachedDates('days');
+
+/** Link zur Kurzbefehl-Anleitung im App-Repo. */
+function shortcutGuideUrl() {
+  const m = /^([^.]+)\.github\.io$/.exec(location.hostname);
+  const repo = location.pathname.split('/').filter(Boolean)[0];
+  const base = m && repo ? `https://github.com/${m[1]}/${repo}` : 'https://github.com/marcobalzano222-hub/lebensapp';
+  return `${base}/blob/main/HEALTH-SHORTCUT.md`;
 }
 
 function exportJson() {
   const days = {};
   for (const d of allDates()) days[d] = getDay(d);
-  return JSON.stringify({ exportedAt: isoLocal(), repo: repoKey(), config, days }, null, 2);
+  const health = {};
+  for (const d of cachedDates('health')) health[d] = Store.get(healthPath(d)).data;
+  return JSON.stringify({ exportedAt: isoLocal(), repo: repoKey(), config, days, health }, null, 2);
 }
 
 function exportCsv() {
@@ -1333,6 +1528,20 @@ function exportCsv() {
     const n = nutritionOf(d);
     if (n.any) { add('nutrition', 'kcal', n.kcal); add('nutrition', 'protein', n.protein); add('nutrition', 'carbs', n.carbs); }
   }
+  for (const date of cachedDates('health')) {
+    const hl = getHealth(date);
+    if (!hl) continue;
+    const pause = (getDay(date) || {}).pause || '';
+    const add = (category, key, value) => rows.push([date, 'health', category, key, value, pause]);
+    if (hl.steps != null) add('metric', 'steps', hl.steps);
+    if (hl.sleepMin != null) add('metric', 'sleep_min', hl.sleepMin);
+    if (hl.weight != null) add('metric', 'weight', hl.weight);
+    for (const w of hl.workouts) {
+      const id = mapWorkout(w.type);
+      add('training', id && id !== 'ignore' ? id : `unmapped:${w.type}`, w.min || '');
+    }
+  }
+  rows.splice(1, rows.length - 1, ...rows.slice(1).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)));
   return rows.map((r) => r.map(esc).join(',')).join('\n') + '\n';
 }
 

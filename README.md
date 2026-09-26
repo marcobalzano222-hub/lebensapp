@@ -41,6 +41,10 @@ Du brauchst ein GitHub-Konto. Alles Weitere dauert etwa 5 Minuten.
 
 Mehrere Personen nutzen dieselbe App-URL – jede mit eigenem Repo und eigenem Token.
 
+### 4. Optional: Apple Health verbinden
+
+Ein iOS-Kurzbefehl kann täglich Schritte, Schlaf, Gewicht und Workouts aus Apple Health in dein Daten-Repo schreiben: **[Anleitung: HEALTH-SHORTCUT.md](HEALTH-SHORTCUT.md)**.
+
 ---
 
 ## Bedienung
@@ -67,8 +71,9 @@ Löscht Safari den lokalen Speicher, startet die App im Onboarding. Nach erneute
 
 ```
 lebensapp-data-<name>/
-├── config.json            Einstellungen (Setup-Reiter)
-└── days/2026-10-01.json   manuelle Eingaben, eine Datei pro Tag
+├── config.json              Einstellungen (Setup-Reiter)
+├── days/2026-10-01.json     manuelle Eingaben, eine Datei pro Tag
+└── health/2026-10-01.json   Apple Health, geschrieben vom Kurzbefehl (die App liest nur)
 ```
 
 - Nicht erfasste Werte fehlen in der Datei; `false` heißt „nicht gemacht“.
@@ -76,7 +81,7 @@ lebensapp-data-<name>/
 - Mahlzeiten speichern zusätzlich `mealsSnapshot` mit den Makros zum Zeitpunkt der Eingabe.
 - Deaktivieren im Setup löscht nichts (`active: false`); IDs bleiben beim Umbenennen stabil.
 
-**CSV-Export** (Long-Format): `date, source, category, key, value, pause`
+**CSV-Export** (Long-Format): `date, source, category, key, value, pause`. `source` ist `app` oder `health`; Health liefert zusätzlich `metric`-Zeilen für `steps`, `sleep_min` und `weight` sowie `training`-Zeilen pro Workout (nicht zugeordnete Typen als `unmapped:<Typ>`).
 
 | category | key | value |
 |---|---|---|
@@ -101,6 +106,6 @@ Dann http://localhost:8000 öffnen. Auf `localhost` ist der Service Worker abges
 
 **Release:** Änderungen nach `main` pushen und in `sw.js` die `CACHE_VERSION` erhöhen, sonst sehen installierte Apps das Update nicht.
 
-## Bewusst nicht in V1
+## Bewusst noch nicht umgesetzt
 
-Health-Kurzbefehl (V1.1), Spieler-Level (V1.2), Benachrichtigungen, Statistiken/Korrelationen in der App, Journal/Freitext, Streaks, Konten/Backend.
+Spieler-Level (V1.2), Benachrichtigungen, Statistiken/Korrelationen in der App, Journal/Freitext, Streaks, Konten/Backend.
