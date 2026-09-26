@@ -1277,11 +1277,135 @@ function viewWeek() {
   return root;
 }
 
+// ---------- Sync und Export ----------
+
+const syncUi = { msg: '', loading: false, loaded: false };
+
+const maskToken = (t) => (t ? `${t.slice(0, Math.min(11, t.length - 4))}…${t.slice(-4)}` : '–');
+
+/** Alle Tagesdaten laden (für den Export). Offline: was im Cache ist. */
+function loadAllDays() {
+  if (syncUi.loading || syncUi.loaded) return;
+  syncUi.loading = true;
+  refreshIndex().then(() => ensureDays(null, null))
+    .then(() => { syncUi.loaded = true; })
+    .catch((e) => {
+      syncUi.msg = e instanceof HttpError
+        ? `${e.message} Der Export enthält nur die Daten auf diesem Gerät.`
+        : 'Offline: Der Export enthält nur die Daten auf diesem Gerät.';
+    })
+    .finally(() => { syncUi.loading = false; if (ui.tab === 'sync') softRender(); });
+}
+
+function allDates() {
+  const set = new Set(Object.keys(meta.index || {}));
+  const prefix = `la.d:${repoKey()}:`;
+  let cachedPaths = [];
+  try { cachedPaths = Object.keys(localStorage).filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length)); } catch { /* egal */ }
+  for (const p of [...Object.keys(meta.pending), ...Object.keys(mem), ...cachedPaths]) {
+    const m = /^days\/(\d{4}-\d{2}-\d{2})\.json$/.exec(p);
+    if (m) set.add(m[1]);
+  }
+  return [...set].filter((d) => getDay(d)).sort();
+}
+
+function exportJson() {
+  const days = {};
+  for (const d of allDates()) days[d] = getDay(d);
+  return JSON.stringify({ exportedAt: isoLocal(), repo: repoKey(), config, days }, null, 2);
+}
+
+function exportCsv() {
+  const esc = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+  const rows = [['date', 'source', 'category', 'key', 'value', 'pause']];
+  for (const date of allDates()) {
+    const d = getDay(date);
+    const pause = d.pause || '';
+    const add = (category, key, value) => rows.push([date, 'app', category, key, value, pause]);
+    if (d.pause) add('day', 'pause', d.pause);
+    for (const [k, v] of Object.entries(d.habits || {})) add('habit', k, v);
+    for (const [k, v] of Object.entries(d.metrics || {})) {
+      if (v && typeof v === 'object') for (const [sk, sv] of Object.entries(v)) add('metric', `${k}_${sk}`, sv);
+      else add('metric', k, v);
+    }
+    for (const t of d.training || []) add('training', t.id, t.min ?? '');
+    for (const m of d.meals || []) add('meal', m.id, m.count);
+    const n = nutritionOf(d);
+    if (n.any) { add('nutrition', 'kcal', n.kcal); add('nutrition', 'protein', n.protein); add('nutrition', 'carbs', n.carbs); }
+  }
+  return rows.map((r) => r.map(esc).join(',')).join('\n') + '\n';
+}
+
+/** Über das iOS-Share-Sheet teilen, sonst herunterladen. */
+async function shareFile(name, text, type) {
+  const file = new File([text], name, { type });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); return; } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const url = URL.createObjectURL(file);
+  const a = h('a', { href: url, download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function viewSync() {
+  const c = conn();
+  const state = syncState();
+  const stateLabel = { ok: 'Synchron', pending: Sync.offline ? 'Offline – wartet' : 'Ausstehend', error: 'Fehler', none: '–' }[state];
+  loadAllDays();
+  const stamp = ymd(new Date());
+  const setMsg = (m) => { syncUi.msg = m; softRender(); };
+
+  return h('div', {},
+    h('h1', {}, 'Sync'),
+    h('div', { class: 'card' },
+      h('div', { class: 'kv' }, h('span', {}, 'Repo'), h('span', {}, `${c.owner}/${c.repo}`)),
+      h('div', { class: 'kv' }, h('span', {}, 'Token'), h('span', {}, maskToken(c.token))),
+      h('div', { class: 'kv' }, h('span', {}, 'Status'), h('span', {}, stateLabel)),
+      h('div', { class: 'kv' }, h('span', {}, 'Letzter Sync'), h('span', {}, formatDateTime(meta.lastSync))),
+      h('div', { class: 'kv' }, h('span', {}, 'Ausstehende Änderungen'), h('span', {}, String(Sync.pendingCount()))),
+      meta.lastError ? h('div', { class: 'kv' }, h('span', {}, 'Letzter Fehler'), h('span', { class: 'error-text' }, meta.lastError)) : null),
+    syncUi.msg ? h('p', { class: 'hint', role: 'status' }, syncUi.msg) : null,
+    h('div', { class: 'btn-row' },
+      h('button', {
+        type: 'button', class: 'btn',
+        onclick: async () => {
+          try { const r = await GH.repo(); setMsg(`Verbindung ok${r.private ? ' (privates Repo)' : ' – Achtung: Repo ist öffentlich!'}.`); } catch (e) { setMsg(e instanceof HttpError ? e.message : 'Keine Verbindung zu GitHub.'); }
+        },
+      }, 'Verbindung testen'),
+      h('button', {
+        type: 'button', class: 'btn primary',
+        onclick: async () => { syncUi.msg = ''; await Sync.flush(); await refreshFromRemote(); softRender(); },
+      }, 'Jetzt synchronisieren')),
+
+    h('h2', {}, 'Export'),
+    h('p', { class: 'hint' }, syncUi.loading ? 'Lade alle Tage …' : `${allDates().length} Tage, Konfiguration inklusive.`),
+    h('div', { class: 'btn-row' },
+      h('button', { type: 'button', class: 'btn', disabled: syncUi.loading, onclick: () => shareFile(`lebensapp-${stamp}.json`, exportJson(), 'application/json') }, 'Alles als JSON'),
+      h('button', { type: 'button', class: 'btn', disabled: syncUi.loading, onclick: () => shareFile(`lebensapp-${stamp}.csv`, exportCsv(), 'text/csv') }, 'Alles als CSV')),
+
+    h('h2', {}, 'Gerät'),
+    h('button', {
+      type: 'button', class: 'btn danger block',
+      onclick: () => {
+        const n = Sync.pendingCount();
+        if (n && !confirm(`${n} Änderung${n > 1 ? 'en sind' : ' ist'} noch nicht übertragen und ginge${n > 1 ? 'n' : ''} verloren. Trotzdem abmelden?`)) return;
+        if (!n && !confirm('Token von diesem Gerät entfernen? Deine Daten bleiben im Repo.')) return;
+        Store.clearAll();
+        LS.del('la.conn');
+        config = null;
+        Object.assign(syncUi, { msg: '', loaded: false });
+        loadMeta();
+        render();
+      },
+    }, 'Token entfernen / abmelden'));
+}
+
 const views = {
   today: viewToday,
   week: viewWeek,
   setup: viewSetup,
-  sync: () => h('div', {}, h('h1', {}, 'Sync')),
+  sync: viewSync,
 };
 
 // ============================================================
