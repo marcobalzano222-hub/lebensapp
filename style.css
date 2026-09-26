@@ -430,3 +430,37 @@ a { color: var(--accent); }
 .s-other { fill: var(--muted); fill-opacity: .35; background: color-mix(in srgb, var(--muted) 35%, transparent); }
 .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 8px; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+
+/* Zeitraum-Umschalter */
+.segmented { display: flex; padding: 3px; gap: 3px; background: var(--surface-2); border-radius: 11px; margin: 4px 0 6px; }
+.segmented button { flex: 1; border: 0; background: transparent; border-radius: 8px; min-height: 34px; font-size: 14px; color: var(--muted); }
+.segmented button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+
+/* Negative */
+.counters { display: flex; flex-wrap: wrap; gap: 8px; }
+.counter-wrap { display: inline-flex; align-items: center; }
+.counter {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px;
+  border-radius: 999px; border: 1px solid var(--line); background: var(--surface); font-size: 14px;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: manipulation;
+}
+.counter .plus { color: var(--muted); }
+.counter.on { border-color: var(--danger); }
+.counter.on b { color: var(--danger); font-variant-numeric: tabular-nums; }
+.counter-minus { width: 32px; height: 32px; min-width: 32px; margin-left: -2px; }
+
+/* Was hilft mir? */
+.insight { padding: 10px 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent); margin-bottom: 8px; font-size: 14px; }
+.insight.bad { border-left-color: var(--danger); }
+.insight small { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
+
+/* Schlafrhythmus & Trends */
+.rhythm { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+.rhythm > div { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.rhythm span { display: block; font-size: 12px; color: var(--muted); }
+.rhythm b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.rhythm small { margin-left: 6px; color: var(--muted); font-size: 12px; }
+.chart .raw { fill: var(--accent); fill-opacity: .35; }
+.chart .raw.second, .chart .dot.second { fill: var(--muted); }
+.chart .line.second { stroke: var(--muted); }
+.goal.over .bar > i { background: var(--danger); }

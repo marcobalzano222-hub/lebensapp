@@ -51,14 +51,15 @@ Ein iOS-Kurzbefehl kann täglich Schritte, Schlaf, Gewicht und Workouts aus Appl
 
 | Reiter | Inhalt |
 |---|---|
-| **Heute** | Der ganze Tag auf einer Seite, gruppiert in Messwerte, Gewohnheiten, Ernährung, Training und Befinden. Abschnitte lassen sich per Tap einklappen; rechts steht, wie viel schon erledigt ist. Wischen nach rechts = Vortag, nach links = zurück Richtung heute; Tap auf das Datum = heute. |
-| **Auswertung** | Level (Körper, Treibstoff, Geist), Soll/Ist für Training, Schritte, Schlaf, Ernährung und Gewohnheiten, Schlafphasen pro Nacht, Ruhepuls und HRV, Wochenschnitt mit 8-Wochen-Verläufen, Gewohnheiten-Raster. Wischen = andere Wochen. |
+| **Heute** | Der ganze Tag auf einer Seite: Messwerte, Gewohnheiten, Ernährung, Training, Befinden, Negatives. Abschnitte lassen sich einklappen; erledigte werden grün. Wischen nach rechts = Vortag, nach links = zurück Richtung heute; Tap auf das Datum = heute. |
+| **Auswertung** | Woche / Monat / 3 Monate. Level (Körper, Treibstoff, Geist), Soll/Ist (Training, Schritte, Schlaf, Ernährung, Negative mit Wochenlimit, Gewohnheiten), „Was hilft mir?“ (Vergleiche, z. B. Tiefschlaf nach Meditation), Schlafphasen und Schlafrhythmus, Ruhepuls und HRV, Gewicht und Blutdruck mit 7-Tage-Trend, Durchschnitte, Gewohnheiten-Raster. |
 | **Setup** | Alles aus `config.json`. |
 | **Sync** | Verbindungsstatus, „Jetzt synchronisieren“, Export (JSON/CSV), „Für Claude kopieren“ (8 Wochen als Tabelle mit Anleitung), Token entfernen. |
 
 - **Kachel antippen** = erledigt, nochmal = zurück. **Lange drücken** = ausdrücklich „nicht gemacht“.
 - **Blutdruck und Gewicht** sind mit dem letzten Wert vorbelegt (grau). „Übernehmen“ oder mit −/+ korrigieren; Tap auf die Zahl öffnet den Ziffernblock.
 - **Nach Mitternacht:** Einträge bis 05:59 (einstellbar unter Setup → Tageswechsel) zählen zum Vortag.
+- **Negatives** (z. B. Süßes, Alkohol, Stress): Tap = +1, „−“ bzw. langer Druck = −1. Optional mit Wochenlimit im Setup.
 - **Pause** (z. B. krank, Reise): Der Tag zählt nicht in Durchschnitte und Wochenziele. Eingaben bleiben möglich.
 - **Sync-Punkt oben rechts:** grün = synchron, gelb = ausstehend/offline, rot = Fehler (Details im Reiter Sync).
 
