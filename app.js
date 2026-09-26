@@ -1070,7 +1070,7 @@ function viewSetup() {
 
 // ---------- Heute ----------
 
-const todayUi = { date: null, pauseOpen: false, trainOpen: null, ensured: null };
+const todayUi = { date: null, pauseOpen: false, trainOpen: null, foodOpen: false, ensured: null };
 
 const byPrio = (list) => list.map((x, i) => [x, i]).sort((a, b) => (a[0].prio || 1) - (b[0].prio || 1) || a[1] - b[1]).map((x) => x[0]);
 const habitDate = (hb, date) => (hb.refersTo === 'previousDay' ? addDays(date, -1) : date);
@@ -1321,6 +1321,11 @@ function nutritionOf(day) {
     for (const k of ['kcal', 'protein', 'carbs']) sum[k] += (src[k] || 0) * (e.count || 0);
     if (e.count) sum.any = true;
   }
+  // Freie Einträge (nur Nährwerte, ohne gespeicherte Mahlzeit)
+  for (const f of day.food || []) {
+    for (const k of ['kcal', 'protein', 'carbs']) sum[k] += f[k] || 0;
+    sum.any = true;
+  }
   return sum;
 }
 
@@ -1343,21 +1348,86 @@ function changeMeal(date, meal, delta) {
   softRender();
 }
 
+/** Wie oft jede Mahlzeit in den gespeicherten Tagen vorkommt – für die Reihenfolge der Schnellauswahl. */
+function mealUsage() {
+  const use = {};
+  for (const d of cachedDates('days')) for (const e of (getDay(d) || {}).meals || []) use[e.id] = (use[e.id] || 0) + (e.count || 0);
+  return use;
+}
+
+/** Eintrag aus dem Formular: mit Namen → Mahlzeit merken und zählen; ohne Namen → freier Eintrag. */
+function addFood(date, { name, kcal, protein, carbs }) {
+  const macros = { kcal: kcal || 0, protein: protein || 0, carbs: carbs || 0 };
+  if (name) {
+    let meal = config.meals.find((m) => m.name.toLowerCase() === name.toLowerCase());
+    if (!meal) {
+      meal = { id: slugId(name, config.meals), name, ...macros, active: true };
+      config.meals.push(meal);
+      saveConfig('config: add meal');
+    } else if (kcal != null || protein != null || carbs != null) {
+      Object.assign(meal, macros, { active: true });
+      saveConfig('config: update meal');
+    }
+    changeMeal(date, meal, 1);
+  } else {
+    haptic();
+    updateDay(date, (d) => { d.food = [...(d.food || []), macros]; });
+    softRender();
+  }
+}
+
 function mealsBlock(date, day) {
-  const meals = config.meals.filter(isActive);
   const counts = Object.fromEntries((day.meals || []).map((e) => [e.id, e.count]));
+  const use = mealUsage();
+  const presets = config.meals.filter(isActive).sort((a, b) => (use[b.id] || 0) - (use[a.id] || 0)).slice(0, 12);
+  const eaten = (day.meals || []).map((e) => ({ e, m: config.meals.find((x) => x.id === e.id) || { id: e.id, name: e.id } }));
   const sum = nutritionOf(day);
   const t = config.targets.daily;
   const part = (label, key, unit = '') => h('span', {},
     `${label} `, h('b', {}, fmtNum(sum[key]), unit),
     t[key] != null ? h('span', { class: 'of' }, ` / ${fmtNum(t[key])}${unit}`) : null);
+  const macroText = (x) => [x.kcal ? `${fmtNum(x.kcal)} kcal` : null, x.protein ? `${fmtNum(x.protein)} g P` : null, x.carbs ? `${fmtNum(x.carbs)} g KH` : null].filter(Boolean).join(' · ') || 'ohne Nährwerte';
+
+  // Formular
+  const f = {
+    name: h('input', { type: 'text', placeholder: 'Name (optional – wird gemerkt)', autocapitalize: 'sentences', enterkeyhint: 'next' }),
+    kcal: h('input', { type: 'text', inputmode: 'decimal', placeholder: 'kcal' }),
+    protein: h('input', { type: 'text', inputmode: 'decimal', placeholder: 'Protein g' }),
+    carbs: h('input', { type: 'text', inputmode: 'decimal', placeholder: 'KH g' }),
+  };
+  const submit = () => {
+    const entry = { name: f.name.value.trim(), kcal: parseNum(f.kcal.value), protein: parseNum(f.protein.value), carbs: parseNum(f.carbs.value) };
+    if (!entry.name && entry.kcal == null && entry.protein == null && entry.carbs == null) { f.name.focus(); return; }
+    todayUi.foodOpen = false;
+    if (document.activeElement) document.activeElement.blur();
+    addFood(date, entry);
+  };
+
   return h('div', { class: 'block' },
-    meals.length ? h('div', { class: 'meals' }, meals.map((m) => h('div', { class: `meal${counts[m.id] ? ' on' : ''}` },
-      h('button', { type: 'button', class: 'meal-add', onclick: () => changeMeal(date, m, 1) },
-        m.name, h('small', {}, `${fmtNum(m.kcal)} kcal · ${fmtNum(m.protein)} g P · ${fmtNum(m.carbs)} g KH`)),
-      counts[m.id] ? h('span', { class: 'count' }, counts[m.id]) : null,
-      counts[m.id] ? h('button', { type: 'button', class: 'icon-btn', 'aria-label': `${m.name} verringern`, onclick: () => changeMeal(date, m, -1) }, '−') : null,
-    ))) : h('p', { class: 'empty-note' }, 'Lege deine Mahlzeiten im Setup an.'),
+    eaten.length || (day.food || []).length ? h('div', { class: 'food-list' },
+      eaten.map(({ e, m }) => h('div', { class: 'food-row' },
+        h('span', { class: 'food-name' }, m.name, h('small', {}, macroText(m))),
+        h('span', { class: 'count' }, `${e.count}×`),
+        h('button', { type: 'button', class: 'icon-btn', 'aria-label': `${m.name} verringern`, onclick: () => changeMeal(date, m, -1) }, '−'),
+        h('button', { type: 'button', class: 'icon-btn', 'aria-label': `${m.name} erhöhen`, onclick: () => changeMeal(date, m, 1) }, '+'))),
+      (day.food || []).map((x, i) => h('div', { class: 'food-row' },
+        h('span', { class: 'food-name' }, 'Eintrag', h('small', {}, macroText(x))),
+        h('button', {
+          type: 'button', class: 'icon-btn', 'aria-label': 'Entfernen',
+          onclick: () => { updateDay(date, (d) => { d.food = (d.food || []).filter((_, j) => j !== i); if (!d.food.length) delete d.food; }); softRender(); },
+        }, '×')))) : null,
+
+    presets.length ? h('div', { class: 'chips quick' }, presets.map((m) => h('button', {
+      type: 'button', class: `chip-btn${counts[m.id] ? ' on' : ''}`, onclick: () => changeMeal(date, m, 1),
+    }, m.name, m.kcal ? h('small', {}, ` ${fmtNum(m.kcal)}`) : null))) : null,
+
+    todayUi.foodOpen
+      ? h('div', { class: 'food-form' }, f.name, h('div', { class: 'food-macros' }, f.kcal, f.protein, f.carbs),
+        h('div', { class: 'btn-row' },
+          h('button', { type: 'button', class: 'btn', onclick: () => { todayUi.foodOpen = false; softRender(); } }, 'Abbrechen'),
+          h('button', { type: 'button', class: 'btn primary', onclick: submit }, 'Hinzufügen')))
+      : h('button', { type: 'button', class: 'btn block add-food', onclick: () => { todayUi.foodOpen = true; softRender(); setTimeout(() => { const i = document.querySelector('.food-form input'); if (i) i.focus(); }, 50); } }, '+ Eintragen'),
+
     h('div', { class: 'sumline' }, part('', 'kcal', ' kcal'), part('P', 'protein', ' g'), part('KH', 'carbs', ' g')));
 }
 
