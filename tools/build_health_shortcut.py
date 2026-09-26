@@ -140,7 +140,7 @@ def github_request(method, url_parts, token, body=None):
 token = act('gettext', CustomOutputName='Token', WFTextActionText='github_pat_…')
 repo = act('gettext', CustomOutputName='Repo', WFTextActionText='marcobalzano222-hub/lebensapp-data-satoshi')
 
-comment('Lebensapp Health (Version 4): schreibt Schritte, Gewicht, Schlaf, Ruhepuls und HRV des Vortags als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
+comment('Lebensapp Health (Version 5): schreibt Schritte, Gewicht, Schlaf, Ruhepuls, HRV und Blutdruck des Vortags als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
 
 now = act('date', CustomOutputName='Jetzt', WFDateActionMode='Current Date')
 yesterday = adjust(now, 'Gestern', 'Subtract', 1, 'days')
@@ -203,6 +203,20 @@ hrv = lines_of(hrv_found, 'HRV-Samples', [
     var('Repeat Item', prop('Source')),
 ], 'HRV')
 
+comment('Blutdruck: alle Messungen des Vortags (systolisch und diastolisch getrennt, mit Zeit und Quelle)')
+bp_sys_found = find_health('Systolic Blood Pressure', (day, 'Tag'), (day_end, 'Tagesende'), 'Systolisch-Samples')
+bp_sys = lines_of(bp_sys_found, 'Systolisch-Samples', [
+    var('Repeat Item', prop('Start Date'), datefmt(ISO)),
+    var('Repeat Item', prop('Value')),
+    var('Repeat Item', prop('Source')),
+], 'Systolisch')
+bp_dia_found = find_health('Diastolic Blood Pressure', (day, 'Tag'), (day_end, 'Tagesende'), 'Diastolisch-Samples')
+bp_dia = lines_of(bp_dia_found, 'Diastolisch-Samples', [
+    var('Repeat Item', prop('Start Date'), datefmt(ISO)),
+    var('Repeat Item', prop('Value')),
+    var('Repeat Item', prop('Source')),
+], 'Diastolisch')
+
 comment('Datei zusammenbauen')
 day_str = out(day, 'Tag', datefmt(DAY))
 data = act('dictionary', CustomOutputName='Health-Daten', WFItems=fields([
@@ -213,6 +227,8 @@ data = act('dictionary', CustomOutputName='Health-Daten', WFItems=fields([
     ('sleep', [out(sleep, 'Schlaf')]),
     ('restingHr', [out(rhr, 'Ruhepuls')]),
     ('hrv', [out(hrv, 'HRV')]),
+    ('bpSys', [out(bp_sys, 'Systolisch')]),
+    ('bpDia', [out(bp_dia, 'Diastolisch')]),
     ('stepsStart', [out(col_start, 'Schritt-Start')]),
     ('stepsEnd', [out(col_end, 'Schritt-Ende')]),
     ('stepsValue', [out(col_value, 'Schritt-Wert')]),

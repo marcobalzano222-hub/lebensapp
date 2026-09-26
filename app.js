@@ -412,6 +412,20 @@ function sleepStats(samples, date) {
   };
 }
 
+/** Blutdruck des Tages aus Apple Health: letzte Messung der obersten Quelle (sys/dia nach Zeitpunkt gepaart). */
+function healthBp(sysText, diaText, date) {
+  const parse = (v) => healthLines(v, ['start', 'value', 'source'])
+    .map((x) => ({ t: parseHealthTime(x.start), v: looseNum(x.value), src: (x.source || '').trim() }))
+    .filter((x) => Number.isFinite(x.t) && x.v != null && x.v > 0 && ymd(new Date(x.t)) === date);
+  const sys = parse(sysText), dia = parse(diaText);
+  if (!sys.length || !dia.length) return null;
+  const src = [...new Set(sys.map((x) => x.src))].sort((a, b) => sourceRank(a) - sourceRank(b) || a.localeCompare(b))[0];
+  const last = sys.filter((x) => x.src === src).sort((a, b) => b.t - a.t)[0];
+  const match = dia.filter((x) => x.src === src).sort((a, b) => Math.abs(a.t - last.t) - Math.abs(b.t - last.t))[0];
+  if (!match || Math.abs(match.t - last.t) > 5 * 60 * 1000) return null;
+  return { value: { sys: Math.round(last.v), dia: Math.round(match.v) }, sources: src ? [src] : [] };
+}
+
 /** Herzwerte (Ruhepuls, HRV) des Tages: Durchschnitt der obersten Quelle, ab 18:00 am Vortag. */
 function heartValue(v, date) {
   const lines = healthLines(v, ['start', 'value', 'source'])
@@ -437,6 +451,7 @@ function getHealth(date) {
   const sleep = healthLines(raw.sleep, ['value', 'start', 'end', 'source']);
   const sleepInfo = sleepStats(sleep, date);
   const rhr = heartValue(raw.restingHr, date), hrv = heartValue(raw.hrv, date);
+  const bp = healthBp(raw.bpSys, raw.bpDia, date);
   const workouts = healthLines(raw.workouts, ['type', 'start', 'min'])
     .map((w) => ({ type: String(w.type || '').trim(), start: w.start || null, min: Math.round(looseNum(w.min ?? w.minutes ?? w.duration) || 0) }))
     .filter((w) => w.type);
@@ -463,8 +478,9 @@ function getHealth(date) {
     remMin: sleepInfo ? sleepInfo.rem : null,
     coreMin: sleepInfo ? sleepInfo.core : null,
     restingHr: rhr.value,
+    bp: bp ? bp.value : null,
     hrv: hrv.value,
-    sources: [...new Set([...(dedup ? Object.keys(dedup.perSource) : []), ...(sleepInfo ? sleepInfo.sources : []), ...rhr.sources, ...hrv.sources].filter((x) => x && x !== '?'))],
+    sources: [...new Set([...(dedup ? Object.keys(dedup.perSource) : []), ...(sleepInfo ? sleepInfo.sources : []), ...rhr.sources, ...hrv.sources, ...(bp ? bp.sources : [])].filter((x) => x && x !== '?'))],
     workouts,
   };
   healthCache.set(date, { sha: f.sha, raw: f.data, parsed });
@@ -507,7 +523,9 @@ function trainingFor(date) {
 function metricOn(m, date) {
   if (m.source === 'health') {
     const hl = getHealth(date);
-    return hl && m.id === 'weight' ? hl.weight : null;
+    if (!hl) return null;
+    if (m.type === 'bloodpressure') return hl.bp;
+    return m.id === 'weight' ? hl.weight : null;
   }
   return ((getDay(date) || {}).metrics || {})[m.id];
 }
@@ -952,7 +970,7 @@ function viewSetup() {
   const metricRows = c.metrics.map((it, i) => editRow(c.metrics, i, 'metrics', [
     slotSelect(it, 'metrics'),
     prioSelect(it, 'metrics'),
-    it.id === 'weight' && it.type === 'number'
+    (it.id === 'weight' && it.type === 'number') || it.type === 'bloodpressure'
       ? selectEl({ manual: 'Manuell', health: 'Apple Health' }, it.source || 'manual', (v) => { it.source = v; commitConfig('metrics', true); })
       : it.type === 'number'
       ? textEl(it.unit, (v) => { it.unit = v.trim(); commitConfig('metrics'); }, { placeholder: 'Einheit', 'aria-label': 'Einheit', style: 'max-width:70px' })
@@ -1122,7 +1140,7 @@ const byPrio = (list) => list.map((x, i) => [x, i]).sort((a, b) => (a[0].prio ||
 const habitDate = (hb, date) => (hb.refersTo === 'previousDay' ? addDays(date, -1) : date);
 const habitValue = (hb, date) => ((getDay(habitDate(hb, date)) || {}).habits || {})[hb.id];
 const metricValue = (m, date) => ((getDay(date) || {}).metrics || {})[m.id];
-const showMetric = (m) => isActive(m) && !(m.type === 'number' && m.source === 'health');
+const showMetric = (m) => isActive(m) && m.source !== 'health';
 
 /** Letzter erfasster Wert einer Kennzahl vor (oder an) einem Datum – für die Vorbelegung. */
 function lastMetricValue(id, date, maxDays = 90) {
@@ -1988,6 +2006,7 @@ function healthStatusCard(date) {
     row('Gewicht', hl && hl.weight != null ? `${fmtNum(hl.weight, 1)} kg` : 'fehlt'),
     row('Schlaf', hl && hl.sleepMin != null ? fmtDuration(hl.sleepMin) : 'fehlt'),
     hl && (hl.deepMin != null || hl.remMin != null) ? row('davon Tief / REM', `${hl.deepMin != null ? fmtDuration(hl.deepMin) : '–'} / ${hl.remMin != null ? fmtDuration(hl.remMin) : '–'}`) : null,
+    row('Blutdruck', hl && hl.bp ? `${hl.bp.sys}/${hl.bp.dia}` : 'fehlt'),
     row('Ruhepuls', hl && hl.restingHr != null ? `${hl.restingHr} bpm` : 'fehlt'),
     row('HRV', hl && hl.hrv != null ? `${hl.hrv} ms` : 'fehlt'));
 }
@@ -2034,6 +2053,11 @@ function exportCsv() {
     if (hl.steps != null) add('metric', 'steps', hl.steps);
     if (hl.sleepMin != null) add('metric', 'sleep_min', hl.sleepMin);
     if (hl.weight != null) add('metric', 'weight', hl.weight);
+    if (hl.bp) { add('metric', 'bp_sys', hl.bp.sys); add('metric', 'bp_dia', hl.bp.dia); }
+    if (hl.restingHr != null) add('metric', 'resting_hr', hl.restingHr);
+    if (hl.hrv != null) add('metric', 'hrv_ms', hl.hrv);
+    if (hl.deepMin != null) add('metric', 'deep_min', hl.deepMin);
+    if (hl.remMin != null) add('metric', 'rem_min', hl.remMin);
     for (const w of hl.workouts) {
       const id = mapWorkout(w.type);
       add('training', id && id !== 'ignore' ? id : `unmapped:${w.type}`, w.min || '');

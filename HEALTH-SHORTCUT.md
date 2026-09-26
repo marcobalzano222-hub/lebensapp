@@ -8,6 +8,7 @@ Der Kurzbefehl liest die Daten des **Vortags** aus Apple Health und legt sie als
 | Gewicht | letzte Messung am Vortag (z. B. Withings-Waage) |
 | Schlaf | die Nacht, die am Morgen des Vortags endet, mit Tief-, REM- und Kernschlaf |
 | Ruhepuls, HRV | vom Vortag (z. B. vom Oura Ring oder der Watch) |
+| Blutdruck | letzte Messung am Vortag (systolisch/diastolisch) |
 
 Workouts sind (noch) nicht dabei: Der eingebaute Kurzbefehl kann den Workout-Typ nicht zuverlässig auslesen. Training trägst du weiter mit einem Tap in der App ein.
 
@@ -40,9 +41,9 @@ Danach unter **Setup → Apple Health** auf **„Kurzbefehl ist installiert“**
 
 > iOS gibt Health-Daten nur heraus, wenn das iPhone entsperrt ist. Läuft die Automation bei gesperrtem Handy, kommen keine Daten an. Dafür gibt es den Knopf im Reiter Heute.
 
-## 4. Gewicht aus Health verwenden
+## 4. Gewicht und Blutdruck aus Health verwenden
 
-**Setup → Kennzahlen → Gewicht → Quelle: Apple Health.** Dann verschwindet das Gewicht aus dem Reiter Heute und kommt nur noch von der Waage.
+**Setup → Kennzahlen → Gewicht bzw. Blutdruck → Quelle: Apple Health.** Dann verschwindet das Feld aus dem Reiter Heute, und die Werte kommen nur noch aus Health (Waage, Blutdruckmessgerät). Sie erscheinen jeweils am Tag danach, wenn der Kurzbefehl gelaufen ist.
 
 ---
 
@@ -72,6 +73,8 @@ Schick einen Screenshot der Fehlermeldung (ohne Token). Häufige Ursachen:
   "sleep": "Kern|2026-09-30T23:30:00+02:00|2026-10-01T02:00:00+02:00|Oura\nREM|…",
   "restingHr": "2026-10-01T03:12:00+02:00|52|Oura",
   "hrv": "2026-10-01T03:12:00+02:00|48|Oura",
+  "bpSys": "2026-10-01T07:10:00+02:00|128|Omron",
+  "bpDia": "2026-10-01T07:10:00+02:00|82|Omron",
   "debug": "tag=… schrittSamples=… schlafSamples=…"
 }
 ```
