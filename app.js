@@ -169,6 +169,7 @@ function normalizeConfig(c) {
   cfg.targets.weekly = Object.assign({}, cfg.targets.weekly);
   for (const k of ['habits', 'metrics', 'training', 'meals', 'counters', 'pauseModes', 'recipes']) if (!Array.isArray(cfg[k])) cfg[k] = [];
   if (!Array.isArray(cfg.foods)) cfg.foods = clone(DEFAULT_FOODS);
+  if (!Array.isArray(cfg.exercises)) cfg.exercises = clone(DEFAULT_EXERCISES);
   cfg.health = Object.assign({ workoutMap: {} }, cfg.health);
   if (!cfg.health.workoutMap || typeof cfg.health.workoutMap !== 'object') cfg.health.workoutMap = {};
   return cfg;
@@ -198,6 +199,11 @@ function migrateConfig(cfg) {
       if (!cfg.recipes.some((r) => r.id === m.id)) cfg.recipes.push({ id: m.id, name: m.name, kcal: m.kcal || 0, protein: m.protein || 0, fat: m.fat || 0, carbs: m.carbs || 0, active: true });
     }
     cfg.migrations.push('meals_to_recipes');
+    changed = true;
+  }
+  if (!cfg.migrations.includes('add_strength')) {
+    if (cfg.targets.weekly.sets_legs == null) cfg.targets.weekly.sets_legs = 5;
+    cfg.migrations.push('add_strength');
     changed = true;
   }
   if (!cfg.migrations.includes('add_counters')) {
@@ -541,7 +547,12 @@ function trainingFor(date) {
   const fromHealth = hl ? hl.workouts.map((w) => ({ id: mapWorkout(w.type), min: w.min || undefined, type: w.type, source: 'health' }))
     .filter((w) => w.id && w.id !== 'ignore') : [];
   const covered = new Set(fromHealth.map((w) => w.id));
-  return [...fromHealth, ...manual.filter((e) => !covered.has(e.id))];
+  const out = [...fromHealth, ...manual.filter((e) => !covered.has(e.id))];
+  // Protokollierte Kraft-Sätze zählen als eine Einheit, falls nicht schon erfasst
+  if (((getDay(date) || {}).strength || []).length && config.training.some((t) => t.id === 'strength') && !out.some((e) => e.id === 'strength')) {
+    out.push({ id: 'strength', source: 'sets' });
+  }
+  return out;
 }
 
 /** Wert einer Kennzahl an einem Tag – bei Quelle „health“ aus Apple Health. */
@@ -975,7 +986,7 @@ function addRow(fields, onAdd) {
   return h('div', { class: `add-row${fields.length > 1 ? ' multi' : ''}` }, fields, btn);
 }
 
-const setupUi = { focus: null, openCat: null, recipeOpen: null };
+const setupUi = { focus: null, openCat: null, openGroup: null, recipeOpen: null };
 
 function viewSetup() {
   const c = config;
@@ -1071,6 +1082,28 @@ function viewSetup() {
   };
   const newRecipe = h('input', { type: 'text', placeholder: 'Neues Rezept, z. B. Mittag-Bowl' });
 
+  // Übungen (je Muskelgruppe aufklappbar)
+  const exRow = (it) => h('div', { class: `row${isActive(it) ? '' : ' inactive'}` },
+    h('div', { class: 'row-main' },
+      textEl(it.name, (v) => { if (v.trim()) { it.name = v.trim(); commitConfig('exercises'); } }, { 'aria-label': 'Name' })),
+    h('div', { class: 'row-opts' },
+      selectEl({ pull: 'Pull', push: 'Push', both: 'Beide' }, it.day || 'both', (v) => { it.day = v; commitConfig('exercises'); }),
+      h('label', { class: 'inline' }, 'Schritt', selectEl({ 1: '1 kg', 2: '2 kg', 2.5: '2,5 kg', 5: '5 kg', 10: '10 kg' }, it.step || 5, (v) => { it.step = Number(v); commitConfig('exercises'); })),
+      h('button', { type: 'button', class: `toggle${isActive(it) ? ' on' : ''}`, onclick: () => { it.active = !isActive(it); commitConfig('exercises', true); } }, isActive(it) ? 'Aktiv' : 'Inaktiv')));
+  const exGroups = Object.entries(MUSCLE_GROUPS).map(([g, label]) => {
+    const list = c.exercises.filter((x) => x.group === g);
+    if (!list.length) return null;
+    return h('details', { class: 'cat', open: setupUi.openGroup === g },
+      h('summary', { onclick: () => { setupUi.openGroup = setupUi.openGroup === g ? null : g; } }, `${label} (${list.filter(isActive).length})`),
+      h('div', { class: 'rows' }, list.map(exRow)));
+  });
+  const newEx = h('input', { type: 'text', placeholder: 'Neue Übung' });
+  const newExGroup = selectEl(MUSCLE_GROUPS, 'back', () => {});
+  const newExDay = selectEl({ pull: 'Pull', push: 'Push', both: 'Beide' }, 'pull', () => {});
+  const setTargets = Object.entries(MUSCLE_GROUPS).filter(([g]) => c.exercises.some((x) => x.group === g && isActive(x))).map(([g, label]) => h('label', { class: 'field' },
+    h('span', {}, `${label} (Sätze / Woche)`),
+    numEl(c.targets.weekly[`sets_${g}`], (v) => { if (v == null) delete c.targets.weekly[`sets_${g}`]; else c.targets.weekly[`sets_${g}`] = v; commitConfig('targets'); }, { placeholder: 'kein Ziel' })));
+
   // Ziele
   const dailyField = (key, label) => h('label', { class: 'field' }, h('span', {}, label),
     numEl(c.targets.daily[key], (v) => { c.targets.daily[key] = v; commitConfig('targets'); }, { placeholder: 'kein Ziel' }));
@@ -1163,6 +1196,17 @@ function viewSetup() {
         numEl(c.targets.daily.sleepH, (v) => { c.targets.daily.sleepH = v; commitConfig('targets'); }, { placeholder: 'kein Ziel', decimal: true }))),
     h('p', { class: 'hint' }, 'Wochenziele Training'),
     h('div', { class: 'pair' }, weeklyFields),
+    h('p', { class: 'hint' }, 'Krafttraining: Sätze pro Muskelgruppe und Woche'),
+    h('div', { class: 'pair' }, setTargets),
+
+    h('h2', {}, 'Übungen'),
+    h('p', { class: 'hint' }, 'Pull/Push steuert nur die Vorsortierung im Training. Das Gewicht merkt sich die App aus deinen Sätzen.'),
+    exGroups,
+    addRow([newEx, newExGroup, newExDay], (name, [, group, day]) => {
+      c.exercises.push({ id: slugId(name, c.exercises), name, group, day, weight: null, step: 5, active: true });
+      setupUi.openGroup = group;
+      commitConfig('exercises');
+    }),
 
     h('h2', { id: 'setup-foods' }, 'Rezepte'),
     h('div', { class: 'rows' }, c.recipes.length ? c.recipes.map(recipeRow) : h('p', { class: 'empty-note' }, 'Noch keine Rezepte. Lege eins an und tippe die Zutaten an.')),
@@ -1227,7 +1271,7 @@ function viewSetup() {
 
 // ---------- Heute ----------
 
-const todayUi = { date: null, pauseOpen: false, trainOpen: null, foodOpen: false, moreCats: new Set(), ensured: null };
+const todayUi = { date: null, pauseOpen: false, trainOpen: null, trainAuto: null, strengthDay: null, lastExercise: null, foodOpen: false, moreCats: new Set(), ensured: null };
 
 const byPrio = (list) => list.map((x, i) => [x, i]).sort((a, b) => (a[0].prio || 1) - (b[0].prio || 1) || a[1] - b[1]).map((x) => x[0]);
 const habitDate = (hb, date) => (hb.refersTo === 'previousDay' ? addDays(date, -1) : date);
@@ -1423,6 +1467,164 @@ function numberCard(m, date, slot) {
   return card;
 }
 
+// ---------- Krafttraining ----------
+// Tap auf eine Übung = 1 Satz mit dem üblichen Gewicht. Jeder Satz speichert sein Gewicht;
+// „üblich“ ist immer das zuletzt verwendete. day.strength = [{ id, sets: [kg, …] }]
+
+const MUSCLE_GROUPS = { back: 'Rücken', rear_delt: 'Hintere Schulter', biceps: 'Bizeps', chest: 'Brust', shoulders: 'Schultern', triceps: 'Trizeps', legs: 'Beine', core: 'Core' };
+const STRENGTH_DAYS = { pull: 'Pull', push: 'Push', all: 'Alle' };
+
+// [id, Name, Muskelgruppe, Tag, Startgewicht (null = beim ersten Satz fragen), Schritt kg]
+const DEFAULT_EXERCISES = [
+  ['lat_pulldown', 'Latzug', 'back', 'pull', 80, 5],
+  ['row_wide', 'Rudern breit', 'back', 'pull', 55, 5],
+  ['pullover', 'Überzüge', 'back', 'pull', 25, 2.5],
+  ['face_pull', 'Face Pulls', 'rear_delt', 'pull', null, 2.5],
+  ['reverse_fly', 'Reverse Butterfly', 'rear_delt', 'pull', null, 5],
+  ['preacher_curl', 'Preacher Curls', 'biceps', 'pull', null, 5],
+  ['hammer_curl', 'Hammer Curls', 'biceps', 'pull', null, 2],
+  ['cable_curl', 'Kabel-Curls einarmig', 'biceps', 'pull', null, 2.5],
+  ['rdl', 'Rumän. Kreuzheben', 'legs', 'pull', null, 5],
+  ['leg_curl', 'Beinbeuger', 'legs', 'pull', null, 5],
+  ['chest_press', 'Brustpresse', 'chest', 'push', null, 5],
+  ['push_up', 'Liegestütze', 'chest', 'push', 0, 5],
+  ['butterfly', 'Butterfly', 'chest', 'push', null, 5],
+  ['ohp', 'Schulterdrücken LH', 'shoulders', 'push', null, 2.5],
+  ['lateral_db', 'Seitheben KH', 'shoulders', 'push', null, 2],
+  ['lateral_cable', 'Seitheben Kabel', 'shoulders', 'push', null, 2.5],
+  ['triceps_pushdown', 'Trizepsdrücken', 'triceps', 'push', null, 5],
+  ['triceps_overhead', 'Trizeps über Kopf', 'triceps', 'push', null, 2.5],
+  ['squat', 'Kniebeugen', 'legs', 'push', null, 5],
+  ['leg_press', 'Beinpresse', 'legs', 'push', null, 10],
+  ['lunges', 'Ausfallschritte', 'legs', 'push', null, 2],
+  ['leg_extension', 'Beinstrecker', 'legs', 'push', null, 5],
+].map(([id, name, group, day, weight, step]) => ({ id, name, group, day, weight, step, active: true }));
+
+const fmtKg = (kg) => (kg == null ? '? kg' : kg === 0 ? 'KG' : `${fmtNum(kg, kg % 1 ? 1 : 0)} kg`);
+
+/** Zuletzt verwendetes Gewicht einer Übung (vor date), sonst Startgewicht. */
+function lastWeight(ex, date) {
+  const dates = cachedDates('days').filter((d) => d < date).reverse();
+  for (const d of dates.slice(0, 120)) {
+    const e = ((getDay(d) || {}).strength || []).find((x) => x.id === ex.id);
+    const sets = e ? e.sets.filter((w) => w != null) : [];
+    if (sets.length) return sets[sets.length - 1];
+  }
+  return ex.weight ?? null;
+}
+
+/** Heutige Einträge ändern (Kopie), leere Übungen entfernen. */
+function updateStrength(date, fn) {
+  updateDay(date, (d) => {
+    const list = (d.strength || []).map((e) => ({ id: e.id, sets: [...e.sets] }));
+    fn(list);
+    d.strength = list.filter((e) => e.sets.length);
+    if (!d.strength.length) delete d.strength;
+  });
+}
+
+function addSet(date, ex) {
+  haptic();
+  const today = ((getDay(date) || {}).strength || []).find((e) => e.id === ex.id);
+  const w = today && today.sets.length ? today.sets[today.sets.length - 1] : lastWeight(ex, date);
+  updateStrength(date, (list) => {
+    let e = list.find((x) => x.id === ex.id);
+    if (!e) { e = { id: ex.id, sets: [] }; list.push(e); }
+    e.sets.push(w);
+  });
+  todayUi.lastExercise = ex.id;
+  softRender();
+}
+
+function removeSet(date, ex) {
+  haptic();
+  updateStrength(date, (list) => { const e = list.find((x) => x.id === ex.id); if (e) e.sets.pop(); });
+  softRender();
+}
+
+/** Gewicht des letzten Satzes ändern; weitere Sätze übernehmen es automatisch. */
+function setWeight(date, ex, value) {
+  updateStrength(date, (list) => {
+    const e = list.find((x) => x.id === ex.id);
+    if (!e || !e.sets.length) return;
+    const last = e.sets.length - 1;
+    // Unbekanntes Startgewicht: alle bisher offenen Sätze bekommen den Wert
+    if (e.sets[last] == null) e.sets = e.sets.map((w) => (w == null ? value : w));
+    else e.sets[last] = value;
+  });
+  softRender();
+}
+
+/** Sätze pro Muskelgruppe über gezählte Tage. */
+function setsByGroup(dates) {
+  const out = {};
+  for (const d of countedDates(dates)) {
+    for (const e of (getDay(d) || {}).strength || []) {
+      const ex = config.exercises.find((x) => x.id === e.id);
+      if (ex) out[ex.group] = (out[ex.group] || 0) + e.sets.length;
+    }
+  }
+  return out;
+}
+
+/** Vorschlag für den Tag: der andere als beim letzten Krafttraining. */
+function suggestedStrengthDay(date) {
+  for (const d of cachedDates('days').filter((x) => x < date).reverse().slice(0, 21)) {
+    const ids = ((getDay(d) || {}).strength || []).map((e) => e.id);
+    if (!ids.length) continue;
+    const days = ids.map((id) => (config.exercises.find((x) => x.id === id) || {}).day);
+    const push = days.filter((x) => x === 'push').length, pull = days.filter((x) => x === 'pull').length;
+    return push >= pull ? 'pull' : 'push';
+  }
+  return 'pull';
+}
+
+function strengthPanel(date, day) {
+  const done = day.strength || [];
+  const todayDays = done.map((e) => (config.exercises.find((x) => x.id === e.id) || {}).day).filter(Boolean);
+  const chosen = todayUi.strengthDay || (todayDays.length ? (todayDays.filter((x) => x === 'push').length > todayDays.filter((x) => x === 'pull').length ? 'push' : 'pull') : suggestedStrengthDay(date));
+  const list = config.exercises.filter((x) => isActive(x) && (chosen === 'all' || x.day === chosen || x.day === 'both'));
+  const setsOf = (id) => ((done.find((e) => e.id === id) || {}).sets || []).length;
+  const groups = Object.keys(MUSCLE_GROUPS).filter((g) => list.some((x) => x.group === g));
+  const legSets = done.filter((e) => (config.exercises.find((x) => x.id === e.id) || {}).group === 'legs').reduce((a, e) => a + e.sets.length, 0);
+
+  return h('div', { class: 'strength' },
+    h('div', { class: 'segmented' }, Object.entries(STRENGTH_DAYS).map(([k, label]) => h('button', {
+      type: 'button', class: chosen === k ? 'on' : '', onclick: () => { todayUi.strengthDay = k; softRender(); },
+    }, label))),
+
+    done.length ? h('div', { class: 'sets-list' }, done.map((e) => {
+      const ex = config.exercises.find((x) => x.id === e.id) || { id: e.id, name: e.id, step: 5 };
+      const last = e.sets[e.sets.length - 1];
+      const step = ex.step || 5;
+      const unknown = last == null;
+      const input = unknown ? h('input', {
+        type: 'text', inputmode: 'decimal', placeholder: 'kg', class: 'kg-input', 'aria-label': `Gewicht ${ex.name}`,
+        onchange: (ev) => { const v = parseNum(ev.target.value); if (v != null && v >= 0) setWeight(date, ex, round(v, 1)); },
+        onkeydown: (ev) => { if (ev.key === 'Enter') ev.target.blur(); },
+      }) : null;
+      if (unknown && todayUi.lastExercise === ex.id) setTimeout(() => { if (input && document.body.contains(input)) input.focus(); }, 60);
+      return h('div', { class: `set-row${todayUi.lastExercise === ex.id ? ' current' : ''}` },
+        h('div', { class: 'set-info' },
+          h('b', {}, ex.name),
+          h('span', { class: 'set-pills' }, e.sets.map((w) => h('i', {}, w == null ? '?' : w === 0 ? 'KG' : fmtNum(w, w % 1 ? 1 : 0))))),
+        unknown ? input : h('div', { class: 'kg-btns' },
+          h('button', { type: 'button', onclick: () => setWeight(date, ex, Math.max(0, round(last - step, 1))) }, `−${fmtNum(step, step % 1 ? 1 : 0)}`),
+          h('span', {}, fmtKg(last)),
+          h('button', { type: 'button', onclick: () => setWeight(date, ex, round(last + step, 1)) }, `+${fmtNum(step, step % 1 ? 1 : 0)}`),
+          h('button', { type: 'button', onclick: () => setWeight(date, ex, round(last + step * 2, 1)) }, `+${fmtNum(step * 2, (step * 2) % 1 ? 1 : 0)}`)));
+    })) : h('p', { class: 'hint' }, 'Tap auf eine Übung = 1 Satz mit deinem üblichen Gewicht. Langer Druck = Satz zurück.'),
+
+    groups.map((g) => [
+      h('p', { class: 'subhead' }, g === 'legs' ? `Beine · ${legSets} Sätze heute` : MUSCLE_GROUPS[g]),
+      h('div', { class: 'food-chips' }, list.filter((x) => x.group === g).map((ex) => {
+        const n = setsOf(ex.id);
+        return foodChip(ex.name, fmtKg(n ? done.find((e) => e.id === ex.id).sets.slice(-1)[0] : lastWeight(ex, date)), n,
+          () => addSet(date, ex), () => removeSet(date, ex));
+      })),
+    ]));
+}
+
 function trainingBlock(date, day) {
   const types = config.training.filter(isActive);
   if (!types.length) return null;
@@ -1433,10 +1635,13 @@ function trainingBlock(date, day) {
     todayUi.trainOpen = null;
     softRender();
   };
+  if (todayUi.trainOpen == null && todayUi.trainAuto !== date && (day.strength || []).length) { todayUi.trainOpen = 'strength'; todayUi.trainAuto = date; }
   const effective = trainingFor(date);
   const fromHealth = effective.filter((e) => e.source === 'health');
   const covered = new Set(fromHealth.map((e) => e.id));
+  const setCount = (day.strength || []).reduce((a, e) => a + e.sets.length, 0);
   const summary = (t) => {
+    if (t.id === 'strength' && setCount) return `${setCount} Sätze`;
     const mine = effective.filter((e) => e.id === t.id);
     if (!mine.length) return null;
     const min = mine.reduce((s, e) => s + (e.min || 0), 0);
@@ -1447,11 +1652,12 @@ function trainingBlock(date, day) {
     h('div', { class: 'train-tiles' }, types.map((t) => h('button', {
       type: 'button', class: `tile${summary(t) ? ' on' : ''}${open === t ? ' open' : ''}`,
       onclick: () => {
-        if (t.presetsMin && t.presetsMin.length) { todayUi.trainOpen = open === t ? null : t.id; softRender(); } else add({ id: t.id });
+        if (t.id === 'strength' || (t.presetsMin && t.presetsMin.length)) { todayUi.trainOpen = open === t ? null : t.id; softRender(); } else add({ id: t.id });
       },
     }, t.name, h('small', {}, summary(t) || ' ')))),
-    open ? h('div', { class: 'presets' },
-      open.presetsMin.map((min) => h('button', { type: 'button', class: 'btn', onclick: () => add({ id: open.id, min }) }, `${min} min`)),
+    open && open.id === 'strength' ? strengthPanel(date, day) : null,
+    open && open.id !== 'strength' ? h('div', { class: 'presets' },
+      (open.presetsMin || []).map((min) => h('button', { type: 'button', class: 'btn', onclick: () => add({ id: open.id, min }) }, `${min} min`)),
       open.type !== 'minutes' ? h('button', { type: 'button', class: 'btn', onclick: () => add({ id: open.id }) }, 'ohne Zeit') : null) : null,
     fromHealth.length || entries.length ? h('div', { class: 'chips' }, fromHealth.map((e) => {
       const t = config.training.find((x) => x.id === e.id);
@@ -1811,7 +2017,7 @@ function viewToday() {
     ensureDays(addDays(date, -1), date).then((changed) => { if (changed) softRender(); }).catch(() => {});
   }
 
-  const go = (d) => { todayUi.date = d >= today ? null : d; todayUi.trainOpen = null; todayUi.pauseOpen = false; render(); };
+  const go = (d) => { todayUi.date = d >= today ? null : d; todayUi.trainOpen = null; todayUi.strengthDay = null; todayUi.lastExercise = null; todayUi.pauseOpen = false; render(); };
   const yesterday = addDays(today, -1);
   const sub = date === today ? 'Heute' : `${date === yesterday ? 'Gestern' : `vor ${Math.round((parseYmd(today) - parseYmd(date)) / 86400000)} Tagen`} · Tippen für heute`;
 
@@ -1825,8 +2031,9 @@ function viewToday() {
 
   const nutrition = nutritionOf(day);
   const training = trainingFor(date);
+  const setTotal = (day.strength || []).reduce((a, e) => a + e.sets.length, 0);
   const trainingSum = training.length
-    ? [...new Set(training.map((e) => (config.training.find((t) => t.id === e.id) || { name: e.id }).name))].join(', ')
+    ? [...new Set(training.map((e) => (config.training.find((t) => t.id === e.id) || { name: e.id }).name))].join(', ') + (setTotal ? ` · ${setTotal} Sätze` : '')
     : '–';
 
   const root = h('div', {},
@@ -1998,6 +2205,11 @@ function weekScore(dates) {
   if (!countedDates(dates).length) return null;
   const parts = { koerper: [], treibstoff: [], geist: [] };   // [wert 0–1, gewicht]
   for (const g of trainingGoals(dates)) parts.koerper.push([g.rate, 2]);
+  const sets = setsByGroup(dates);
+  for (const [g] of Object.entries(MUSCLE_GROUPS)) {
+    const target = config.targets.weekly[`sets_${g}`];
+    if (target) parts.koerper.push([Math.min(1, (sets[g] || 0) / (target * dates.length / 7)), 1]);
+  }
   for (const hb of config.habits.filter(isActive)) {
     const r = habitRate(hb, dates);
     if (r != null) parts[habitAttr(hb)].push([r, (hb.prio || 1) === 1 ? 2 : 1]);
@@ -2191,6 +2403,7 @@ function insights(dates) {
     ...config.habits.filter(isActive).map((hb) => ({ label: hb.name, test: (d) => { const day = getDay(d); return day ? ((day.habits || {})[hb.id] === true) : null; } })),
     ...config.counters.filter(isActive).map((c) => ({ label: c.name, negative: true, test: (d) => { const day = getDay(d); return day ? (((day.counters || {})[c.id] || 0) > 0) : null; } })),
     { label: 'Training', test: (d) => (getDay(d) || getHealth(d) ? trainingFor(d).length > 0 : null) },
+    { label: 'Beintraining', test: (d) => { const day = getDay(d); if (!day) return null; return (day.strength || []).some((e) => (config.exercises.find((x) => x.id === e.id) || {}).group === 'legs'); } },
   ];
   // Viele Carbs (über dem Median der Tage mit Ernährungseinträgen)
   const carbDays = days.map((d) => nutritionOf(Object.assign(emptyDay(d), getDay(d) || {}))).filter((n) => n.any).map((n) => n.carbs).sort((a, b) => a - b);
@@ -2312,6 +2525,31 @@ function viewWeek() {
     t.sleepH ? goalRow('Schlaf Ø', sleep != null ? `${fmtDuration(sleep)} / ${fmtDuration(t.sleepH * 60)}` : '–', sleep != null ? sleep / (t.sleepH * 60) : 0) : null,
   ].filter(Boolean);
 
+  // Krafttraining: Sätze je Muskelgruppe (Soll/Ist) und Gewichtsverlauf je Übung
+  const groupSets = setsByGroup(dates);
+  const setRows = Object.entries(MUSCLE_GROUPS).map(([g, label]) => {
+    const target = config.targets.weekly[`sets_${g}`];
+    const ist = groupSets[g] || 0;
+    if (!target && !ist) return null;
+    const soll = target ? Math.round(target * dates.length / 7) : null;
+    return goalRow(label, soll ? `${ist} / ${soll} Sätze` : `${ist} Sätze`, soll ? Math.min(1, ist / soll) : 1, { reached: soll ? ist >= soll : false });
+  }).filter(Boolean);
+  const curveDates = dates.length >= 84 ? dates : rangeDates(addDays(p.end < today ? p.end : today, -83), p.end < today ? p.end : today);
+  const curves = config.exercises.map((ex) => {
+    const pts = curveDates.map((d) => { const e = ((getDay(d) || {}).strength || []).find((x) => x.id === ex.id); const w = e ? e.sets.filter((v) => v != null) : []; return w.length ? Math.max(...w) : null; });
+    const vals = pts.filter((v) => v != null);
+    if (!vals.length) return null;
+    return { ex, pts, first: vals[0], last: vals[vals.length - 1], n: vals.length };
+  }).filter(Boolean).sort((a, b) => b.n - a.n);
+  const strengthContent = setRows.length || curves.length ? [
+    setRows.length ? [h('p', { class: 'subhead first' }, 'Sätze pro Muskelgruppe'), setRows] : null,
+    curves.length ? [h('p', { class: 'subhead' }, `Gewichte (schwerster Satz, ${formatDateShort(curveDates[0])} – heute)`),
+      h('div', { class: 'curves' }, curves.map((c) => h('div', { class: 'curve' },
+        h('div', {}, h('b', {}, c.ex.name), h('small', {}, `${c.n}× trainiert`)),
+        sparkline([c.pts.filter((v) => v != null)]),
+        h('span', { class: c.last > c.first ? 'up' : '' }, c.last !== c.first ? `${fmtKg(c.first)} → ${fmtKg(c.last)}` : fmtKg(c.last)))))] : null,
+  ] : null;
+
   // Was hilft mir? – mindestens 8 Wochen Daten, sonst der gewählte Zeitraum
   const analysisEnd = p.end < today ? p.end : today;
   const analysisDates = rangeDates(addDays(analysisEnd, -Math.max(55, dates.length - 1)), analysisEnd);
@@ -2408,6 +2646,7 @@ function viewWeek() {
       habitRows.length ? [h('p', { class: 'subhead' }, 'Gewohnheiten'), habitRows] : null,
       !goals.length && !healthRows.length && !nutriRows.length ? h('p', { class: 'hint' }, 'Ziele legst du im Setup unter „Ziele“ fest.') : null,
     ]),
+    strengthContent ? section('s-strength', 'Krafttraining', null, strengthContent) : null,
     section('s-insights', 'Was hilft mir?', null, [
       found.length ? found.map(insightRow)
         : h('p', { class: 'hint' }, 'Noch keine klaren Unterschiede. Dafür braucht es für jeden Vergleich mindestens 4 Tage mit und 4 ohne – je mehr Wochen, desto verlässlicher.'),
@@ -2528,6 +2767,7 @@ function exportCsv() {
     for (const [k, v] of Object.entries(d.counters || {})) add('counter', k, v);
     for (const [k, v] of Object.entries(d.foods || {})) add('food', k, v);
     for (const [k, v] of Object.entries(d.recipes || {})) add('recipe', k, v);
+    for (const e of d.strength || []) add('strength', e.id, e.sets.map((w) => w ?? '').join(';'));
     const n = nutritionOf(d);
     if (n.any) { add('nutrition', 'kcal', Math.round(n.kcal)); add('nutrition', 'protein', Math.round(n.protein)); add('nutrition', 'fat', Math.round(n.fat)); add('nutrition', 'carbs', Math.round(n.carbs)); }
   }
@@ -2564,7 +2804,7 @@ function exportForClaude(weeks = 8) {
   for (const m of metrics) cols.push(...(m.type === 'bloodpressure' ? [`${m.id}_sys`, `${m.id}_dia`] : [m.id]));
   const counters = config.counters.filter(isActive);
   cols.push(...counters.map((c) => c.id));
-  cols.push('kcal', 'protein', 'fat', 'carbs', 'foods', ...training.map((t) => `${t.id}${t.type === 'minutes' ? '_min' : ''}`),
+  cols.push('kcal', 'protein', 'fat', 'carbs', 'foods', 'strength', ...training.map((t) => `${t.id}${t.type === 'minutes' ? '_min' : ''}`),
     'steps', 'sleep_min', 'deep_min', 'rem_min', 'resting_hr', 'hrv_ms');
   const rows = [cols.join(',')];
   for (const d of dates) {
@@ -2582,6 +2822,7 @@ function exportForClaude(weeks = 8) {
     const foods = [...Object.entries(day.recipes || {}).map(([id, k]) => `${(config.recipes.find((x) => x.id === id) || { name: id }).name} ${k}x`),
       ...Object.entries(day.foods || {}).map(([id, k]) => `${(config.foods.find((x) => x.id === id) || { name: id }).name} ${k}x`)].join('; ');
     r.push(n.any ? Math.round(n.kcal) : '', n.any ? Math.round(n.protein) : '', n.any ? Math.round(n.fat) : '', n.any ? Math.round(n.carbs) : '', foods ? `"${foods.replace(/"/g, '')}"` : '',
+      (day.strength || []).length ? `"${day.strength.map((e) => `${(config.exercises.find((x) => x.id === e.id) || { name: e.id }).name} ${e.sets.map((w) => w ?? '?').join('/')}kg`).join('; ')}"` : '',
       ...training.map((t) => { const e = tr.filter((x) => x.id === t.id); return e.length ? (t.type === 'minutes' ? e.reduce((a, x) => a + (x.min || 0), 0) : e.length) : ''; }),
       hl.steps ?? '', hl.sleepMin ?? '', hl.deepMin ?? '', hl.remMin ?? '', hl.restingHr ?? '', hl.hrv ?? '');
     rows.push(r.join(','));
@@ -2592,6 +2833,7 @@ function exportForClaude(weeks = 8) {
     ...counters.map((c) => `${c.id} = ${c.name} (Anzahl pro Tag, negativ – weniger ist besser)`),
     ...training.map((t) => `${t.id} = ${t.name} (${t.type === 'minutes' ? 'Minuten' : 'Einheiten'})`),
     'steps, sleep_min, deep_min, rem_min, resting_hr, hrv_ms = aus Apple Health (Schlaf = Nacht vor dem Datum)',
+    'strength = Krafttraining: Übung mit Gewicht je Satz (kg, z. B. 80/80/85kg = 3 Sätze)',
     'kcal, protein, fat, carbs = Tagessumme (g); foods = gegessene Lebensmittel/Rezepte mit Anzahl Einheiten; Ziel: wenig Carbs',
     'pause = Pause-Tag (krank, Reise …) – bei Auswertungen ausklammern',
   ];
@@ -2791,7 +3033,7 @@ function init() {
 
 /** Nach Rückkehr in die App: automatischen Check-in und „Heute“ neu bestimmen. */
 function onResume(reset) {
-  if (reset) Object.assign(todayUi, { date: null, pauseOpen: false, trainOpen: null });
+  if (reset) Object.assign(todayUi, { date: null, pauseOpen: false, trainOpen: null, strengthDay: null, lastExercise: null });
   softRender();
 }
 

@@ -493,3 +493,25 @@ a { color: var(--accent); }
 details.cat { border: 1px solid var(--line); border-radius: var(--radius); margin: 8px 0; background: var(--surface); }
 details.cat summary { padding: 12px 14px; cursor: pointer; font-weight: 550; }
 details.cat .rows { padding: 0 8px 8px; }
+
+/* Krafttraining */
+.strength { margin-top: 12px; }
+.sets-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.set-row { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.set-row.current { border-color: var(--accent); }
+.set-info { flex: 1 1 140px; min-width: 0; }
+.set-info b { display: block; font-size: 14px; }
+.set-pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.set-pills i { font-style: normal; font-size: 12px; font-variant-numeric: tabular-nums; background: var(--accent-soft); border-radius: 6px; padding: 1px 6px; }
+.kg-btns { display: flex; align-items: center; gap: 4px; }
+.kg-btns button { min-width: 44px; height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); font-size: 13px; font-variant-numeric: tabular-nums; padding: 0 6px; }
+.kg-btns span { min-width: 56px; text-align: center; font-weight: 650; font-variant-numeric: tabular-nums; }
+.kg-input { width: 90px !important; min-height: 38px !important; text-align: center; }
+.curves { display: flex; flex-direction: column; gap: 6px; }
+.curve { display: grid; grid-template-columns: 1fr 70px auto; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; }
+.curve b { display: block; font-size: 14px; }
+.curve small { font-size: 12px; color: var(--muted); }
+.curve svg { width: 70px; height: 24px; }
+.curve svg path { fill: none; stroke: var(--accent); stroke-width: 1.6; }
+.curve > span { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.curve > span.up { color: var(--accent); }
