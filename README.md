@@ -53,8 +53,8 @@ Ein iOS-Kurzbefehl kann täglich Schritte, Schlaf, Gewicht und Workouts aus Appl
 |---|---|
 | **Heute** | Der ganze Tag auf einer Seite: Messwerte, Gewohnheiten, Ernährung, Training, Befinden, Negatives. Abschnitte lassen sich einklappen; erledigte werden grün. Wischen nach rechts = Vortag, nach links = zurück Richtung heute; Tap auf das Datum = heute. |
 | **Auswertung** | Woche / Monat / 3 Monate. Level (Körper, Treibstoff, Geist), Soll/Ist (Training, Schritte, Schlaf, Ernährung, Negative mit Wochenlimit, Gewohnheiten), „Was hilft mir?“ (Vergleiche, z. B. Tiefschlaf nach Meditation), Schlafphasen und Schlafrhythmus, Ruhepuls und HRV, Gewicht und Blutdruck mit 7-Tage-Trend, Durchschnitte, Gewohnheiten-Raster. |
-| **Setup** | Alles aus `config.json`. |
-| **Sync** | Verbindungsstatus, „Jetzt synchronisieren“, Export (JSON/CSV), „Für Claude kopieren“ (8 Wochen als Tabelle mit Anleitung), Token entfernen. |
+| **Erkenntnisse** | Kurze Notizen mit Tags (Philosophie, Ökonomie, Gesundheit, Training, Buch/Empfehlung, Idee) und optionaler Quelle. Archiv mit Suche und Tag-Filter, Bearbeiten/Löschen, „Für Claude kopieren“. Im Reiter Heute erscheint täglich eine ältere Erkenntnis. |
+| **Setup** | Aufklappbare Gruppen: Ziele, Gewohnheiten, Messwerte, Training, Ernährung, Negatives, Erkenntnisse, Apple Health, Sync & Daten (Status, „Jetzt synchronisieren“, Export JSON/CSV, „Für Claude kopieren“, Token entfernen), Allgemein. |
 
 - **Kachel antippen** = erledigt, nochmal = zurück. **Lange drücken** = ausdrücklich „nicht gemacht“.
 - **Blutdruck und Gewicht** sind mit dem letzten Wert vorbelegt (grau). „Übernehmen“ oder mit −/+ korrigieren; Tap auf die Zahl öffnet den Ziffernblock.
@@ -63,7 +63,7 @@ Ein iOS-Kurzbefehl kann täglich Schritte, Schlaf, Gewicht und Workouts aus Appl
 - **Krafttraining:** Kachel „Kraft“ → Pull / Push / Alle → Übung antippen = 1 Satz mit dem zuletzt verwendeten Gewicht. Mit −/+ korrigierst du das Gewicht des letzten Satzes; weitere Sätze übernehmen es. Langer Druck = Satz zurück. Die Auswertung zeigt Sätze pro Muskelgruppe (mit Wochenziel, z. B. Beine ≥ 5) und den Gewichtsverlauf je Übung.
 - **Negatives** (z. B. Süßes, Alkohol, Stress): Tap = +1, „−“ bzw. langer Druck = −1. Optional mit Wochenlimit im Setup.
 - **Pause** (z. B. krank, Reise): Der Tag zählt nicht in Durchschnitte und Wochenziele. Eingaben bleiben möglich.
-- **Sync-Punkt oben rechts:** grün = synchron, gelb = ausstehend/offline, rot = Fehler (Details im Reiter Sync).
+- **Sync-Punkt oben rechts:** grün = synchron, gelb = ausstehend/offline, rot = Fehler (Details unter Setup → Sync & Daten; ein Tap auf den Punkt führt direkt dorthin).
 
 Offline eingegebene Daten werden lokal gespeichert und automatisch übertragen, sobald wieder Netz da ist.
 Löscht Safari den lokalen Speicher, startet die App im Onboarding. Nach erneuter Token-Eingabe sind alle synchronisierten Daten wieder da.
@@ -76,7 +76,8 @@ Löscht Safari den lokalen Speicher, startet die App im Onboarding. Nach erneute
 lebensapp-data-<name>/
 ├── config.json              Einstellungen (Setup-Reiter)
 ├── days/2026-10-01.json     manuelle Eingaben, eine Datei pro Tag
-└── health/2026-10-01.json   Apple Health, geschrieben vom Kurzbefehl (die App liest nur)
+├── health/2026-10-01.json   Apple Health, geschrieben vom Kurzbefehl (die App liest nur)
+└── notes/2026-10.json       Erkenntnisse, eine Datei pro Monat
 ```
 
 - Nicht erfasste Werte fehlen in der Datei; `false` heißt „nicht gemacht“.

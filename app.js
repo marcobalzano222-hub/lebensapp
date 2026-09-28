@@ -170,6 +170,7 @@ function normalizeConfig(c) {
   for (const k of ['habits', 'metrics', 'training', 'meals', 'counters', 'pauseModes', 'recipes']) if (!Array.isArray(cfg[k])) cfg[k] = [];
   if (!Array.isArray(cfg.foods)) cfg.foods = clone(DEFAULT_FOODS);
   if (!Array.isArray(cfg.exercises)) cfg.exercises = clone(DEFAULT_EXERCISES);
+  if (!Array.isArray(cfg.noteTags)) cfg.noteTags = [...DEFAULT_NOTE_TAGS];
   cfg.health = Object.assign({ workoutMap: {} }, cfg.health);
   if (!cfg.health.workoutMap || typeof cfg.health.workoutMap !== 'object') cfg.health.workoutMap = {};
   return cfg;
@@ -729,7 +730,7 @@ const Sync = {
         // SHA veraltet: neu laden, lokale Felder darüberlegen, erneut schreiben.
         const remote = await GH.getFile(path);
         const current = Store.get(path).data;
-        data = remote ? mergeLocalOver(remote.data, current) : current;
+        data = remote ? (path.startsWith('notes/') ? mergeNotes(remote.data, current) : mergeLocalOver(remote.data, current)) : current;
         sha = remote ? remote.sha : null;
         Store.put(path, data, sha);
         if (path === 'config.json') { config = normalizeConfig(data); }
@@ -829,6 +830,7 @@ function refreshFromRemote() {
         }
       }
       await refreshIndex();
+      try { if (await ensureNotes()) changed = true; } catch { /* Notizen sind optional */ }
       const today = logicalToday();
       if (await ensureDays(addDays(today, -14), today)) changed = true;
       Sync.offline = false;
@@ -987,6 +989,18 @@ function addRow(fields, onAdd) {
 }
 
 const setupUi = { focus: null, openCat: null, openGroup: null, recipeOpen: null };
+// Aufgeklappte Setup-Gruppen (nur auf diesem Gerät); standardmäßig alles zu
+const setupOpen = new Set(LS.get('la.ui.setupOpen', []));
+
+function setupGroup(id, title, summary, content) {
+  const open = setupOpen.has(id);
+  return h('section', { class: `sgroup${open ? ' open' : ''}`, id: `setup-${id}` },
+    h('button', {
+      type: 'button', class: 'sgroup-head', 'aria-expanded': open ? 'true' : 'false',
+      onclick: () => { if (open) setupOpen.delete(id); else setupOpen.add(id); LS.set('la.ui.setupOpen', [...setupOpen]); softRender(); },
+    }, h('span', {}, h('b', {}, title), summary ? h('small', {}, summary) : null), h('span', { class: 'chev', 'aria-hidden': 'true' }, '›')),
+    open ? h('div', { class: 'sgroup-body' }, content) : null);
+}
 
 function viewSetup() {
   const c = config;
@@ -1162,111 +1176,142 @@ function viewSetup() {
     h('h1', {}, 'Setup'),
     firstRun ? h('p', { class: 'muted' }, 'Die Standardkonfiguration ist angelegt. Passe sie an; jede Änderung wird automatisch gespeichert.') : null,
 
-    h('label', { class: 'field' }, h('span', {}, 'Name'),
-      textEl(c.user.name, (v) => { c.user.name = v.trim(); commitConfig('user'); })),
+    setupGroup('goals', 'Ziele', 'Ernährung, Schritte, Schlaf, Training', [
+      h('p', { class: 'hint' }, 'Tagesziele Ernährung'),
+      h('div', { class: 'pair' }, dailyField('kcal', 'kcal'), dailyField('protein', 'Protein (g)'), dailyField('fat', 'Fett (g)'), dailyField('carbs', 'Carbs max. (g)')),
+      h('p', { class: 'hint' }, 'Tagesziele Aktivität & Schlaf'),
+      h('div', { class: 'pair' }, dailyField('steps', 'Schritte pro Tag'),
+        h('label', { class: 'field' }, h('span', {}, 'Schlaf pro Nacht (Stunden)'),
+          numEl(c.targets.daily.sleepH, (v) => { c.targets.daily.sleepH = v; commitConfig('targets'); }, { placeholder: 'kein Ziel', decimal: true }))),
+      h('p', { class: 'hint' }, 'Wochenziele Training'),
+      h('div', { class: 'pair' }, weeklyFields),
+      h('p', { class: 'hint' }, 'Krafttraining: Sätze pro Muskelgruppe und Woche'),
+      h('div', { class: 'pair' }, setTargets),
 
-    h('h2', {}, 'Gewohnheiten'),
-    h('div', { class: 'rows' }, habitRows),
-    addRow([newHabit, newHabitSlot], (name, [, slot]) => {
-      c.habits.push({ id: slugId(name, c.habits), name, type: 'bool', slot, prio: 2, active: true });
-      commitConfig('habits');
-    }),
+    ]),
 
-    h('h2', {}, 'Kennzahlen'),
-    h('div', { class: 'rows' }, metricRows),
-    addRow([newMetric, newMetricType, newMetricUnit], (name, [, type, unit]) => {
-      const m = { id: slugId(name, c.metrics), name, type, slot: 'morning', prio: 2, active: true };
-      if (type === 'number') { m.unit = unit.trim(); m.decimals = 1; m.source = 'manual'; }
-      c.metrics.push(m);
-      commitConfig('metrics');
-    }),
+    setupGroup('habits', 'Gewohnheiten', `${c.habits.filter(isActive).length} aktiv`, [
+      h('div', { class: 'rows' }, habitRows),
+      addRow([newHabit, newHabitSlot], (name, [, slot]) => {
+        c.habits.push({ id: slugId(name, c.habits), name, type: 'bool', slot, prio: 2, active: true });
+        commitConfig('habits');
+      }),
 
-    h('h2', {}, 'Training'),
-    h('div', { class: 'rows' }, trainRows),
-    addRow([newTrain, newTrainType], (name, [, type]) => {
-      c.training.push({ id: slugId(name, c.training), name, type, presetsMin: [30, 45, 60], prio: 2, active: true });
-      commitConfig('training');
-    }),
+    ]),
 
-    h('h2', {}, 'Ziele'),
-    h('p', { class: 'hint' }, 'Tagesziele Ernährung'),
-    h('div', { class: 'pair' }, dailyField('kcal', 'kcal'), dailyField('protein', 'Protein (g)'), dailyField('fat', 'Fett (g)'), dailyField('carbs', 'Carbs max. (g)')),
-    h('p', { class: 'hint' }, 'Tagesziele Aktivität & Schlaf'),
-    h('div', { class: 'pair' }, dailyField('steps', 'Schritte pro Tag'),
-      h('label', { class: 'field' }, h('span', {}, 'Schlaf pro Nacht (Stunden)'),
-        numEl(c.targets.daily.sleepH, (v) => { c.targets.daily.sleepH = v; commitConfig('targets'); }, { placeholder: 'kein Ziel', decimal: true }))),
-    h('p', { class: 'hint' }, 'Wochenziele Training'),
-    h('div', { class: 'pair' }, weeklyFields),
-    h('p', { class: 'hint' }, 'Krafttraining: Sätze pro Muskelgruppe und Woche'),
-    h('div', { class: 'pair' }, setTargets),
+    setupGroup('metrics', 'Messwerte', 'Blutdruck, Gewicht, Befinden', [
+      h('div', { class: 'rows' }, metricRows),
+      addRow([newMetric, newMetricType, newMetricUnit], (name, [, type, unit]) => {
+        const m = { id: slugId(name, c.metrics), name, type, slot: 'morning', prio: 2, active: true };
+        if (type === 'number') { m.unit = unit.trim(); m.decimals = 1; m.source = 'manual'; }
+        c.metrics.push(m);
+        commitConfig('metrics');
+      }),
 
-    h('h2', {}, 'Übungen'),
-    h('p', { class: 'hint' }, 'Pull/Push steuert nur die Vorsortierung im Training. Das Gewicht merkt sich die App aus deinen Sätzen.'),
-    exGroups,
-    addRow([newEx, newExGroup, newExDay], (name, [, group, day]) => {
-      c.exercises.push({ id: slugId(name, c.exercises), name, group, day, weight: null, step: 5, active: true });
-      setupUi.openGroup = group;
-      commitConfig('exercises');
-    }),
+    ]),
 
-    h('h2', { id: 'setup-foods' }, 'Rezepte'),
-    h('div', { class: 'rows' }, c.recipes.length ? c.recipes.map(recipeRow) : h('p', { class: 'empty-note' }, 'Noch keine Rezepte. Lege eins an und tippe die Zutaten an.')),
-    addRow([newRecipe], (name) => {
-      const r = { id: slugId(name, c.recipes), name, items: {}, active: true };
-      c.recipes.push(r);
-      setupUi.recipeOpen = r.id;
-      commitConfig('recipes');
-    }),
+    setupGroup('training', 'Training', 'Trainingsarten und Kraftübungen', [
+      h('h3', {}, 'Trainingsarten'),
+      h('div', { class: 'rows' }, trainRows),
+      addRow([newTrain, newTrainType], (name, [, type]) => {
+        c.training.push({ id: slugId(name, c.training), name, type, presetsMin: [30, 45, 60], prio: 2, active: true });
+        commitConfig('training');
+      }),
 
-    h('h2', {}, 'Lebensmittel'),
-    h('p', { class: 'hint' }, 'Nährwerte je Einheit (Richtwerte). Im Reiter Heute stehen die häufigsten vorne.'),
-    foodCats,
-    addRow([newFood, newFoodCat, newFoodUnit], (name, [, cat, unit]) => {
-      c.foods.push({ id: slugId(name, c.foods), name, cat, unit: unit.trim() || '1 Portion', kcal: 0, protein: 0, fat: 0, carbs: 0, active: true });
-      setupUi.openCat = cat;
-      commitConfig('foods');
-    }),
+      h('h3', {}, 'Kraftübungen'),
+      h('p', { class: 'hint' }, 'Pull/Push steuert nur die Vorsortierung im Training. Das Gewicht merkt sich die App aus deinen Sätzen.'),
+      exGroups,
+      addRow([newEx, newExGroup, newExDay], (name, [, group, day]) => {
+        c.exercises.push({ id: slugId(name, c.exercises), name, group, day, weight: null, step: 5, active: true });
+        setupUi.openGroup = group;
+        commitConfig('exercises');
+      }),
 
-    h('h2', {}, 'Tageswechsel'),
-    h('label', { class: 'field' }, h('span', {}, 'Einträge bis einschließlich … zählen noch zum Vortag'),
-      h('input', { type: 'time', value: c.windows.evening.end, onchange: (e) => { if (e.target.value) { c.windows.evening.end = e.target.value; commitConfig('windows'); } } })),
-    h('p', { class: 'hint' }, 'Standard 05:59: Wer nach Mitternacht noch etwas einträgt, landet beim richtigen Tag. „Morgen/Abend“ bei Gewohnheiten und Kennzahlen bestimmt nur die Reihenfolge.'),
+    ]),
 
-    h('h2', {}, 'Negatives'),
-    h('p', { class: 'hint' }, 'Zähler für Dinge, die du reduzieren willst. Im Reiter Heute: Tap = +1. Ein Wochenlimit erscheint in der Auswertung unter Soll/Ist.'),
-    h('div', { class: 'rows' }, counterRows),
-    addRow([newCounter], (name) => {
-      c.counters.push({ id: slugId(name, c.counters), name, active: true });
-      commitConfig('counters');
-    }),
+    setupGroup('food', 'Ernährung', `${c.recipes.filter(isActive).length} Rezepte · ${c.foods.filter(isActive).length} Lebensmittel`, [
+      h('h3', {}, 'Rezepte'),
+      h('div', { class: 'rows' }, c.recipes.length ? c.recipes.map(recipeRow) : h('p', { class: 'empty-note' }, 'Noch keine Rezepte. Lege eins an und tippe die Zutaten an.')),
+      addRow([newRecipe], (name) => {
+        const r = { id: slugId(name, c.recipes), name, items: {}, active: true };
+        c.recipes.push(r);
+        setupUi.recipeOpen = r.id;
+        commitConfig('recipes');
+      }),
 
-    h('h2', {}, 'Pause-Modi'),
-    h('div', { class: 'rows' }, pauseRows),
-    addRow([newPause], (name) => {
-      c.pauseModes.push({ id: slugId(name, c.pauseModes), name });
-      commitConfig('pauseModes');
-    }),
+      h('h3', {}, 'Lebensmittel'),
+      h('p', { class: 'hint' }, 'Nährwerte je Einheit (Richtwerte). Im Reiter Heute stehen die häufigsten vorne.'),
+      foodCats,
+      addRow([newFood, newFoodCat, newFoodUnit], (name, [, cat, unit]) => {
+        c.foods.push({ id: slugId(name, c.foods), name, cat, unit: unit.trim() || '1 Portion', kcal: 0, protein: 0, fat: 0, carbs: 0, active: true });
+        setupUi.openCat = cat;
+        commitConfig('foods');
+      }),
 
-    h('h2', {}, 'Apple Health'),
-    h('p', { class: 'hint' },
-      'Schritte, Schlaf und Gewicht kommen vom iOS-Kurzbefehl „Lebensapp-Health“. ',
-      h('a', { href: 'shortcuts/Lebensapp-Health.shortcut' }, 'Kurzbefehl laden'), ' · ',
-      h('a', { href: shortcutGuideUrl(), target: '_blank', rel: 'noopener' }, 'Anleitung'), '.'),
-    h('div', { class: 'btn-row' }, h('button', {
-      type: 'button', class: `toggle${c.health.shortcut ? ' on' : ''}`,
-      onclick: () => { c.health.shortcut = !c.health.shortcut; commitConfig('health', true); },
-    }, c.health.shortcut ? 'Kurzbefehl installiert ✓' : 'Kurzbefehl ist installiert')),
-    h('p', { class: 'hint' }, 'Dann erscheint morgens ein Knopf, der die Daten von gestern überträgt, falls sie noch fehlen.'),
-    lastHealth ? healthStatusCard(lastHealth) : h('p', { class: 'hint' }, 'Noch keine Health-Daten empfangen.'),
-    stepSources.length > 1 ? [
-      h('p', { class: 'hint' }, 'Reihenfolge der Quellen – so wie in der Health-App unter „Datenquellen und Zugriff“. Wo sich Messungen überschneiden (Schritte, Schlaf, Herz), zählt die obere Quelle.'),
-      h('div', { class: 'rows' }, stepSources.map((src, i) => h('div', { class: 'row' }, h('div', { class: 'row-main' },
-        h('span', { style: 'flex:1' }, `${i + 1}. ${src}`),
-        h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nach oben', disabled: i === 0, onclick: () => moveSource(i, -1) }, '↑'),
-        h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nach unten', disabled: i === stepSources.length - 1, onclick: () => moveSource(i, 1) }, '↓'))))),
-    ] : null,
-    seenTypes.length ? [h('p', { class: 'hint' }, 'Workout-Typen zuordnen (Health-Workouts ersetzen manuelle Einträge derselben Art):'),
-      h('div', { class: 'rows' }, mapRows)] : null,
+    ]),
+
+    setupGroup('negatives', 'Negatives', `${c.counters.filter(isActive).length} Zähler`, [
+      h('p', { class: 'hint' }, 'Zähler für Dinge, die du reduzieren willst. Im Reiter Heute: Tap = +1. Ein Wochenlimit erscheint in der Auswertung unter Soll/Ist.'),
+      h('div', { class: 'rows' }, counterRows),
+      addRow([newCounter], (name) => {
+        c.counters.push({ id: slugId(name, c.counters), name, active: true });
+        commitConfig('counters');
+      }),
+
+    ]),
+
+    setupGroup('notes', 'Erkenntnisse', 'Tags und Erinnerung', [
+      h('div', { class: 'rows' }, c.noteTags.map((t, i) => h('div', { class: 'row' }, h('div', { class: 'row-main' },
+        textEl(t, (v) => { if (v.trim()) { c.noteTags[i] = v.trim(); commitConfig('noteTags'); } }, { 'aria-label': 'Tag' }),
+        h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Tag entfernen', onclick: () => { c.noteTags.splice(i, 1); commitConfig('noteTags', true); } }, '×'))))),
+      addRow([h('input', { type: 'text', placeholder: 'Neuer Tag' })], (name) => { if (!c.noteTags.includes(name)) c.noteTags.push(name); commitConfig('noteTags'); }),
+      h('div', { class: 'btn-row' }, h('button', {
+        type: 'button', class: `toggle${c.notesResurface !== false ? ' on' : ''}`,
+        onclick: () => { c.notesResurface = c.notesResurface === false; commitConfig('notes', true); },
+      }, c.notesResurface !== false ? 'Erinnerung im Reiter Heute: an' : 'Erinnerung im Reiter Heute: aus')),
+      h('p', { class: 'hint' }, 'Zeigt unten im Reiter Heute täglich eine ältere Erkenntnis (mindestens 7 Tage alt).'),
+    ]),
+
+    setupGroup('health', 'Apple Health', lastHealth ? `zuletzt ${formatDateShort(lastHealth)}` : 'nicht verbunden', [
+      h('p', { class: 'hint' },
+        'Schritte, Schlaf und Gewicht kommen vom iOS-Kurzbefehl „Lebensapp-Health“. ',
+        h('a', { href: 'shortcuts/Lebensapp-Health.shortcut' }, 'Kurzbefehl laden'), ' · ',
+        h('a', { href: shortcutGuideUrl(), target: '_blank', rel: 'noopener' }, 'Anleitung'), '.'),
+      h('div', { class: 'btn-row' }, h('button', {
+        type: 'button', class: `toggle${c.health.shortcut ? ' on' : ''}`,
+        onclick: () => { c.health.shortcut = !c.health.shortcut; commitConfig('health', true); },
+      }, c.health.shortcut ? 'Kurzbefehl installiert ✓' : 'Kurzbefehl ist installiert')),
+      h('p', { class: 'hint' }, 'Dann erscheint morgens ein Knopf, der die Daten von gestern überträgt, falls sie noch fehlen.'),
+      lastHealth ? healthStatusCard(lastHealth) : h('p', { class: 'hint' }, 'Noch keine Health-Daten empfangen.'),
+      stepSources.length > 1 ? [
+        h('p', { class: 'hint' }, 'Reihenfolge der Quellen – so wie in der Health-App unter „Datenquellen und Zugriff“. Wo sich Messungen überschneiden (Schritte, Schlaf, Herz), zählt die obere Quelle.'),
+        h('div', { class: 'rows' }, stepSources.map((src, i) => h('div', { class: 'row' }, h('div', { class: 'row-main' },
+          h('span', { style: 'flex:1' }, `${i + 1}. ${src}`),
+          h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nach oben', disabled: i === 0, onclick: () => moveSource(i, -1) }, '↑'),
+          h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nach unten', disabled: i === stepSources.length - 1, onclick: () => moveSource(i, 1) }, '↓'))))),
+      ] : null,
+      seenTypes.length ? [h('p', { class: 'hint' }, 'Workout-Typen zuordnen (Health-Workouts ersetzen manuelle Einträge derselben Art):'),
+        h('div', { class: 'rows' }, mapRows)] : null,    ]),
+
+    setupGroup('sync', 'Sync & Daten', syncState() === 'ok' ? 'synchron' : syncState() === 'error' ? 'Fehler' : 'ausstehend', viewSync()),
+
+    setupGroup('general', 'Allgemein', 'Name, Tageswechsel, Pause-Modi', [
+      h('label', { class: 'field' }, h('span', {}, 'Name'),
+        textEl(c.user.name, (v) => { c.user.name = v.trim(); commitConfig('user'); })),
+
+      h('h3', {}, 'Tageswechsel'),
+      h('label', { class: 'field' }, h('span', {}, 'Einträge bis einschließlich … zählen noch zum Vortag'),
+        h('input', { type: 'time', value: c.windows.evening.end, onchange: (e) => { if (e.target.value) { c.windows.evening.end = e.target.value; commitConfig('windows'); } } })),
+      h('p', { class: 'hint' }, 'Standard 05:59: Wer nach Mitternacht noch etwas einträgt, landet beim richtigen Tag. „Morgen/Abend“ bei Gewohnheiten und Kennzahlen bestimmt nur die Reihenfolge.'),
+
+      h('h3', {}, 'Pause-Modi'),
+      h('div', { class: 'rows' }, pauseRows),
+      addRow([newPause], (name) => {
+        c.pauseModes.push({ id: slugId(name, c.pauseModes), name });
+        commitConfig('pauseModes');
+      }),
+
+    ]),
   );
 }
 
@@ -1975,7 +2020,7 @@ function foodBlock(date, day) {
       : h('p', { class: 'food-links' },
         h('button', { type: 'button', class: 'link', onclick: () => { todayUi.foodOpen = true; softRender(); setTimeout(() => { const i = document.querySelector('.food-form input'); if (i) i.focus(); }, 50); } }, 'Nur Nährwerte eintragen'),
         ' · ',
-        h('button', { type: 'button', class: 'link', onclick: () => { setupUi.focus = 'foods'; setTab('setup'); } }, 'Lebensmittel & Rezepte bearbeiten')));
+        h('button', { type: 'button', class: 'link', onclick: () => { setupOpen.add('food'); LS.set('la.ui.setupOpen', [...setupOpen]); setupUi.focus = 'food'; setTab('setup'); } }, 'Lebensmittel & Rezepte bearbeiten')));
 }
 
 function metricBlock(m, date, slot) {
@@ -2113,6 +2158,7 @@ function viewToday() {
       section('training', 'Training', { text: trainingSum }, trainingBlock(date, day)),
       section('mood', 'Befinden', countSum('mood'), moods.map((m) => metricBlock(m, date))),
       section('neg', 'Negatives', { text: (() => { const n = Object.values(day.counters || {}).reduce((a, x) => a + x, 0); return n ? `${n}×` : 'keine'; })() }, counterBlock(date, day)),
+      date === logicalToday() ? noteReminder(date) : null,
       !habits.length && !metrics.length ? h('p', { class: 'empty-note' }, 'Noch nichts eingerichtet – siehe Setup.') : null,
     ));
 
@@ -2730,6 +2776,220 @@ function viewWeek() {
   return root;
 }
 
+// ---------- Erkenntnisse ----------
+// Kurze Notizen mit Tags und optionaler Quelle. Eine Datei pro Monat: notes/JJJJ-MM.json = { month, notes: [...] }
+// Gelöschte Einträge bleiben als { id, deleted: true } stehen, damit sie beim Zusammenführen nicht zurückkommen.
+
+const DEFAULT_NOTE_TAGS = ['Philosophie', 'Ökonomie', 'Gesundheit', 'Training', 'Buch/Empfehlung', 'Idee'];
+const notePath = (month) => `notes/${month}.json`;
+const notesUi = { tags: [], sourceOpen: false, filter: null, query: '', editing: null };
+
+/** Alle bekannten Monate (Repo-Index, Cache, ausstehend). */
+function noteMonths() {
+  const set = new Set(Object.keys(meta.nindex || {}));
+  const prefix = `la.d:${repoKey()}:notes/`;
+  try { for (const k of Object.keys(localStorage)) if (k.startsWith(prefix)) set.add(k.slice(prefix.length, prefix.length + 7)); } catch { /* egal */ }
+  for (const p of [...Object.keys(meta.pending), ...Object.keys(mem)]) { const m = /^notes\/(\d{4}-\d{2})\.json$/.exec(p); if (m && mem[p] !== null) set.add(m[1]); }
+  return [...set].filter((m) => Store.get(notePath(m))).sort().reverse();
+}
+
+/** Alle Notizen, neueste zuerst, ohne gelöschte. */
+function allNotes() {
+  return noteMonths().flatMap((m) => (Store.get(notePath(m)).data.notes || []))
+    .filter((n) => !n.deleted && n.text)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+}
+
+function changeNotes(month, fn) {
+  const cur = Store.get(notePath(month));
+  const data = clone(cur ? cur.data : { month, notes: [] });
+  fn(data.notes);
+  Store.change(notePath(month), data);
+}
+
+function addNote({ text, source, tags }) {
+  const now = new Date();
+  const month = ymd(now).slice(0, 7);
+  const note = { id: `${now.getTime().toString(36)}${Math.random().toString(36).slice(2, 6)}`, createdAt: isoLocal(now), updatedAt: isoLocal(now), text, tags };
+  if (source) note.source = source;
+  meta.commitMsg = Object.assign(meta.commitMsg || {}, { [notePath(month)]: `notes: add ${month}` });
+  changeNotes(month, (list) => list.push(note));
+}
+
+function updateNote(note, patch) {
+  const month = note.createdAt.slice(0, 7);
+  changeNotes(month, (list) => {
+    const i = list.findIndex((n) => n.id === note.id);
+    if (i !== -1) list[i] = patch.deleted ? { id: note.id, createdAt: note.createdAt, deleted: true, updatedAt: isoLocal() } : { ...list[i], ...patch, updatedAt: isoLocal() };
+  });
+}
+
+/** Zusammenführen bei Konflikt: Vereinigung nach id, bei gleicher id gewinnt die jüngere Änderung. */
+function mergeNotes(remote, local) {
+  const byId = new Map();
+  for (const n of [...((remote && remote.notes) || []), ...((local && local.notes) || [])]) {
+    const prev = byId.get(n.id);
+    if (!prev || (n.updatedAt || '') >= (prev.updatedAt || '')) byId.set(n.id, n);
+  }
+  return { month: (local && local.month) || (remote && remote.month), notes: [...byId.values()].sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1)) };
+}
+
+/** Alle Notiz-Monate laden, die im Repo neuer sind als der Cache. */
+async function ensureNotes() {
+  const files = await GH.listDir('notes');
+  meta.nindex = {};
+  for (const f of files) { const m = /^(\d{4}-\d{2})\.json$/.exec(f.name); if (m) meta.nindex[m[1]] = f.sha; }
+  saveMeta();
+  let changed = false;
+  for (const [m, sha] of Object.entries(meta.nindex)) {
+    const path = notePath(m);
+    if (Store.isPending(path)) continue;
+    const cached = Store.get(path);
+    if (cached && cached.sha === sha) continue;
+    const f = await GH.getFile(path);
+    if (f && !Store.isPending(path)) { Store.put(path, f.data, f.sha); changed = true; }
+  }
+  return changed;
+}
+
+const relTime = (iso) => {
+  const days = Math.round((parseYmd(logicalToday()) - parseYmd(iso.slice(0, 10))) / 86400000);
+  if (days <= 0) return 'heute';
+  if (days === 1) return 'gestern';
+  if (days < 14) return `vor ${days} Tagen`;
+  if (days < 60) return `vor ${Math.round(days / 7)} Wochen`;
+  return `vor ${Math.round(days / 30)} Monaten`;
+};
+
+function tagChips(selected, onToggle) {
+  return h('div', { class: 'tag-chips' }, config.noteTags.map((t) => h('button', {
+    type: 'button', class: `tag${selected.includes(t) ? ' on' : ''}`, 'aria-pressed': selected.includes(t) ? 'true' : 'false',
+    onclick: () => onToggle(t),
+  }, t)));
+}
+
+const autoGrow = (el) => { el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 360)}px`; };
+
+function noteEditor(note) {
+  const text = h('textarea', { class: 'note-text', rows: 3, oninput: (e) => autoGrow(e.target) });
+  text.value = note.text;   // Textarea-Inhalt nur über die Eigenschaft setzbar
+  const source = h('input', { type: 'text', value: note.source || '', placeholder: 'Quelle (optional)' });
+  let tags = [...(note.tags || [])];
+  const chips = () => tagChips(tags, (t) => { tags = tags.includes(t) ? tags.filter((x) => x !== t) : [...tags, t]; box.replaceChild(chips(), box.children[2]); });
+  const box = h('div', { class: 'note editing' }, text, source, chips(),
+    h('div', { class: 'btn-row' },
+      h('button', { type: 'button', class: 'btn danger', onclick: () => { if (confirm('Erkenntnis löschen?')) { updateNote(note, { deleted: true }); notesUi.editing = null; render(); } } }, 'Löschen'),
+      h('button', { type: 'button', class: 'btn', onclick: () => { notesUi.editing = null; render(); } }, 'Abbrechen'),
+      h('button', {
+        type: 'button', class: 'btn primary',
+        onclick: () => { if (!text.value.trim()) return; updateNote(note, { text: text.value.trim(), source: source.value.trim() || undefined, tags }); notesUi.editing = null; render(); },
+      }, 'Speichern')));
+  setTimeout(() => autoGrow(text), 0);
+  return box;
+}
+
+function noteCard(n) {
+  if (notesUi.editing === n.id) return noteEditor(n);
+  const d = new Date(n.createdAt);
+  return h('button', { type: 'button', class: 'note', onclick: () => { notesUi.editing = n.id; render(); } },
+    h('p', { class: 'note-body' }, n.text),
+    h('div', { class: 'note-meta' },
+      h('span', {}, `${d.getDate()}.${d.getMonth() + 1}.${d.getFullYear() !== new Date().getFullYear() ? d.getFullYear() : ''} · ${pad2(d.getHours())}:${pad2(d.getMinutes())}`),
+      (n.tags || []).map((t) => h('span', { class: 'note-tag' }, t)),
+      n.source ? h('span', { class: 'note-source' }, n.source) : null));
+}
+
+function exportNotesForClaude(list) {
+  return [
+    `Hier sind ${list.length} Erkenntnisse, die ich mir notiert habe (neueste zuerst).`,
+    'Bitte fasse die wichtigsten Gedanken zusammen, finde wiederkehrende Themen und Verbindungen und schlage mir 3 Fragen zum Weiterdenken vor.',
+    '',
+    ...list.map((n) => `- ${n.createdAt.slice(0, 10)}${(n.tags || []).length ? ` [${n.tags.join(', ')}]` : ''}: ${n.text.replace(/\s*\n\s*/g, ' / ')}${n.source ? ` (Quelle: ${n.source})` : ''}`),
+  ].join('\n');
+}
+
+function viewNotes() {
+  const draft = LS.get('la.ui.noteDraft', { text: '', source: '' });
+  const text = h('textarea', {
+    class: 'note-text', rows: 3, placeholder: 'Was hast du gelernt, gehört, gelesen?',
+    oninput: (e) => { autoGrow(e.target); LS.set('la.ui.noteDraft', { ...LS.get('la.ui.noteDraft', {}), text: e.target.value }); },
+  });
+  text.value = draft.text || '';
+  const source = h('input', {
+    type: 'text', placeholder: 'Quelle, z. B. Podcast, Buch, Person', value: draft.source || '',
+    oninput: (e) => LS.set('la.ui.noteDraft', { ...LS.get('la.ui.noteDraft', {}), source: e.target.value }),
+  });
+  const save = () => {
+    const t = text.value.trim();
+    if (!t) { text.focus(); return; }
+    haptic();
+    addNote({ text: t, source: source.value.trim() || undefined, tags: [...notesUi.tags] });
+    LS.del('la.ui.noteDraft');
+    notesUi.tags = [];
+    notesUi.sourceOpen = false;
+    if (document.activeElement) document.activeElement.blur();
+    render();
+  };
+  setTimeout(() => autoGrow(text), 0);
+
+  const q = notesUi.query.trim().toLowerCase();
+  const all = allNotes();
+  const list = all.filter((n) => (!notesUi.filter || (n.tags || []).includes(notesUi.filter))
+    && (!q || `${n.text} ${n.source || ''} ${(n.tags || []).join(' ')}`.toLowerCase().includes(q)));
+  const byMonth = new Map();
+  for (const n of list) {
+    const d = new Date(n.createdAt), key = `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+    if (!byMonth.has(key)) byMonth.set(key, []);
+    byMonth.get(key).push(n);
+  }
+  const search = h('input', {
+    type: 'search', placeholder: 'Suchen …', value: notesUi.query,
+    onchange: (e) => { notesUi.query = e.target.value; render(); },
+    onkeydown: (e) => { if (e.key === 'Enter') e.target.blur(); },
+  });
+
+  return h('div', {},
+    h('h1', {}, 'Erkenntnisse'),
+    h('div', { class: 'composer' },
+      text,
+      tagChips(notesUi.tags, (t) => { notesUi.tags = notesUi.tags.includes(t) ? notesUi.tags.filter((x) => x !== t) : [...notesUi.tags, t]; softRender(); }),
+      notesUi.sourceOpen || draft.source ? source
+        : h('button', { type: 'button', class: 'link', onclick: () => { notesUi.sourceOpen = true; softRender(); setTimeout(() => { const i = document.querySelector('.composer input'); if (i) i.focus(); }, 30); } }, '+ Quelle'),
+      h('button', { type: 'button', class: 'btn primary block', onclick: save }, 'Speichern')),
+
+    h('h2', {}, `Archiv · ${all.length}`),
+    all.length ? [
+      search,
+      h('div', { class: 'tag-chips filter' },
+        h('button', { type: 'button', class: `tag${!notesUi.filter ? ' on' : ''}`, onclick: () => { notesUi.filter = null; render(); } }, 'Alle'),
+        config.noteTags.filter((t) => all.some((n) => (n.tags || []).includes(t))).map((t) => h('button', {
+          type: 'button', class: `tag${notesUi.filter === t ? ' on' : ''}`, onclick: () => { notesUi.filter = notesUi.filter === t ? null : t; render(); },
+        }, t))),
+      [...byMonth.entries()].map(([month, notes]) => [h('p', { class: 'subhead' }, month), h('div', { class: 'notes' }, notes.map(noteCard))]),
+      !list.length ? h('p', { class: 'hint' }, 'Nichts gefunden.') : null,
+      list.length ? h('div', { class: 'btn-row' }, h('button', {
+        type: 'button', class: 'btn block',
+        onclick: async () => {
+          const out = exportNotesForClaude(list);
+          try { await navigator.clipboard.writeText(out); alert('Kopiert – jetzt in einen Claude-Chat einfügen.'); } catch { await shareFile(`erkenntnisse-${ymd(new Date())}.txt`, out, 'text/plain'); }
+        },
+      }, `${list.length === all.length ? 'Alle' : 'Diese'} ${list.length} für Claude kopieren`)) : null,
+    ] : h('p', { class: 'hint' }, 'Noch keine Erkenntnisse. Schreib einfach los – ein Satz reicht.'));
+}
+
+/** Im Reiter Heute: täglich wechselnd eine ältere Erkenntnis (mindestens 7 Tage alt). */
+function noteReminder(date) {
+  if (config.notesResurface === false) return null;
+  const old = allNotes().filter((n) => n.createdAt.slice(0, 10) <= addDays(date, -7));
+  if (!old.length) return null;
+  let hash = 0;
+  for (const ch of date) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  const n = old[hash % old.length];
+  return h('button', { type: 'button', class: 'reminder', onclick: () => { notesUi.editing = null; notesUi.query = ''; setTab('notes'); } },
+    h('span', { class: 'small muted' }, `Erinnerung · ${relTime(n.createdAt)}${(n.tags || []).length ? ` · ${n.tags.join(', ')}` : ''}`),
+    h('p', {}, n.text));
+}
+
 // ---------- Sync und Export ----------
 
 const syncUi = { msg: '', loading: false, loaded: false };
@@ -2798,7 +3058,7 @@ function exportJson() {
   for (const d of allDates()) days[d] = getDay(d);
   const health = {};
   for (const d of cachedDates('health')) health[d] = Store.get(healthPath(d)).data;
-  return JSON.stringify({ exportedAt: isoLocal(), repo: repoKey(), config, days, health }, null, 2);
+  return JSON.stringify({ exportedAt: isoLocal(), repo: repoKey(), config, days, health, notes: allNotes() }, null, 2);
 }
 
 function exportCsv() {
@@ -2935,7 +3195,6 @@ function viewSync() {
   const setMsg = (m) => { syncUi.msg = m; softRender(); };
 
   return h('div', {},
-    h('h1', {}, 'Sync'),
     h('div', { class: 'card' },
       h('div', { class: 'kv' }, h('span', {}, 'Repo'), h('span', {}, `${c.owner}/${c.repo}`)),
       h('div', { class: 'kv' }, h('span', {}, 'Token'), h('span', {}, maskToken(c.token))),
@@ -2956,7 +3215,7 @@ function viewSync() {
         onclick: async () => { syncUi.msg = ''; await Sync.flush(); await refreshFromRemote(); softRender(); },
       }, 'Jetzt synchronisieren')),
 
-    h('h2', {}, 'Export'),
+    h('h3', {}, 'Export'),
     h('p', { class: 'hint' }, syncUi.loading ? 'Lade alle Tage …' : `${allDates().length} Tage, Konfiguration inklusive.`),
     h('div', { class: 'btn-row' },
       h('button', { type: 'button', class: 'btn', disabled: syncUi.loading, onclick: () => shareFile(`lebensapp-${stamp}.json`, exportJson(), 'application/json') }, 'Alles als JSON'),
@@ -2964,7 +3223,7 @@ function viewSync() {
     h('div', { class: 'btn-row' },
       h('button', { type: 'button', class: 'btn block', disabled: syncUi.loading, onclick: copyForClaude }, 'Für Claude kopieren (8 Wochen)')),
 
-    h('h2', {}, 'Gerät'),
+    h('h3', {}, 'Gerät'),
     h('button', {
       type: 'button', class: 'btn danger block',
       onclick: () => {
@@ -2984,8 +3243,8 @@ function viewSync() {
 const views = {
   today: viewToday,
   week: viewWeek,
+  notes: viewNotes,
   setup: viewSetup,
-  sync: viewSync,
 };
 
 // ============================================================
@@ -3007,6 +3266,7 @@ function setTab(tab) {
     setupUi.focus = null;
   }
   if (tab === 'week') ensureWeekData();
+  if (tab === 'notes' && conn()) ensureNotes().then((changed) => { if (changed && ui.tab === 'notes') softRender(); }).catch(() => {});
 }
 
 function render() {
@@ -3019,7 +3279,8 @@ function render() {
   }
   document.body.classList.remove('no-tabs');
   for (const b of document.querySelectorAll('#tabbar button')) b.classList.toggle('active', b.dataset.tab === ui.tab);
-  view.replaceChildren((views[ui.tab] || views.today)());
+  if (!views[ui.tab]) ui.tab = 'today';
+  view.replaceChildren(views[ui.tab]());
 }
 
 /** Neu zeichnen, außer der Nutzer tippt gerade in ein Feld. */
@@ -3050,7 +3311,7 @@ function init() {
     const b = e.target.closest('button[data-tab]');
     if (b) setTab(b.dataset.tab);
   });
-  $('#sync-dot').addEventListener('click', () => { if (conn() && config) setTab('sync'); });
+  $('#sync-dot').addEventListener('click', () => { if (conn() && config) { setupOpen.add('sync'); setTab('setup'); setupUi.focus = 'sync'; const el = document.getElementById('setup-sync'); if (el) el.scrollIntoView(); } });
 
   loadMeta();
   loadConfigFromCache();
