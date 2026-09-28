@@ -1,6 +1,6 @@
 # Kurzbefehl „Lebensapp-Health“
 
-Der Kurzbefehl liest die Daten von **gestern und heute bis jetzt** aus Apple Health – inklusive der letzten Nacht – und legt sie als `health/JJJJ-MM-TT.json` (Datum = gestern) in deinem privaten Daten-Repo ab. Die App ordnet alles selbst den richtigen Tagen und Nächten zu; ein späterer Lauf ergänzt, was seitdem dazugekommen ist.
+Der Kurzbefehl liest die Daten von **gestern und heute bis jetzt** (technisch: bis morgen, weil iOS tageweise und ohne Endtag filtert) aus Apple Health – inklusive der letzten Nacht – und legt sie als `health/JJJJ-MM-TT.json` (Datum = gestern) in deinem privaten Daten-Repo ab. Die App ordnet alles selbst den richtigen Tagen und Nächten zu; ein späterer Lauf ergänzt, was seitdem dazugekommen ist.
 
 | Wert | Zeitraum |
 |---|---|

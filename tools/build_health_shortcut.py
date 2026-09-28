@@ -140,7 +140,7 @@ def github_request(method, url_parts, token, body=None):
 token = act('gettext', CustomOutputName='Token', WFTextActionText='github_pat_…')
 repo = act('gettext', CustomOutputName='Repo', WFTextActionText='marcobalzano222-hub/lebensapp-data-satoshi')
 
-comment('Lebensapp Health (Version 7): schreibt Schritte, Gewicht, Schlaf, Ruhepuls, HRV und Blutdruck von gestern und heute bis jetzt (inkl. letzter Nacht) als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
+comment('Lebensapp Health (Version 8): schreibt Schritte, Gewicht, Schlaf, Ruhepuls, HRV und Blutdruck von gestern und heute bis jetzt (inkl. letzter Nacht) als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
 
 now = act('date', CustomOutputName='Jetzt', WFDateActionMode='Current Date')
 yesterday = adjust(now, 'Gestern', 'Subtract', 1, 'days')
@@ -148,16 +148,19 @@ day = adjust(yesterday, 'Tag', 'Get Start of Day')
 day_end = adjust(day, 'Tagesende', 'Add', 1, 'days')
 sleep_start = adjust(day, 'Schlaf ab', 'Subtract', 6, 'hr')
 sleep_end = adjust(day, 'Schlaf bis', 'Add', 12, 'hr')
+# iOS vergleicht „Startdatum ist zwischen“ nur tageweise und ohne den Endtag – daher bis morgen abfragen,
+# damit heute (inkl. der letzten Nacht nach Mitternacht) enthalten ist. Die App sortiert nach Zeitstempeln.
+until = adjust(now, 'Bis morgen', 'Add', 1, 'days')
 
 comment('Schritte: pro Tag gruppiert (iOS rechnet doppelte iPhone-/Watch-Schritte heraus). Die App nimmt die Zeile des Vortags.')
-steps_found = find_health('Steps', (day, 'Tag'), (now, 'Jetzt'), 'Schritt-Samples', group_by_day=True)
+steps_found = find_health('Steps', (day, 'Tag'), (until, 'Bis morgen'), 'Schritt-Samples', group_by_day=True)
 steps = lines_of(steps_found, 'Schritt-Samples', [
     var('Repeat Item', prop('Start Date'), datefmt(ISO)),
     var('Repeat Item', prop('Value')),
 ], 'Schritte')
 
 comment('Gewicht: alle Messungen im Zeitraum. Die App nimmt die letzte Messung des Vortags.')
-weight_found = find_health('Weight', (day, 'Tag'), (now, 'Jetzt'), 'Gewicht-Samples')
+weight_found = find_health('Weight', (day, 'Tag'), (until, 'Bis morgen'), 'Gewicht-Samples')
 weight = lines_of(weight_found, 'Gewicht-Samples', [
     var('Repeat Item', prop('Start Date'), datefmt(ISO)),
     var('Repeat Item', prop('Value')),
@@ -166,7 +169,7 @@ step_count = act('count', CustomOutputName='Anzahl Schritt-Samples', WFCountType
                  WFInput=attach(out(steps_found, 'Schritt-Samples')), Input=attach(out(steps_found, 'Schritt-Samples')))
 
 comment('Schritte einzeln mit Quelle (iPhone, Watch, Ring …). Die App zählt überlappende Zeiträume nur einmal, wie die Health-App.')
-steps_raw = find_health('Steps', (day, 'Tag'), (now, 'Jetzt'), 'Schritt-Einzelwerte')
+steps_raw = find_health('Steps', (day, 'Tag'), (until, 'Bis morgen'), 'Schritt-Einzelwerte')
 def column(prop_name, name, *aggr):
     d = act('properties.health.quantity', CustomOutputName=f'{name} (Liste)', WFContentItemPropertyName=prop_name,
             WFInput=attach(out(steps_raw, 'Schritt-Einzelwerte')))
@@ -179,7 +182,7 @@ col_source = column('Source', 'Schritt-Quelle')
 
 
 comment('Schlaf: alle Schlaf-Phasen ab gestern 18 Uhr bis jetzt – also auch die letzte Nacht (die App ordnet sie den Nächten zu)')
-sleep_found = find_health('Sleep', (sleep_start, 'Schlaf ab'), (now, 'Jetzt'), 'Schlaf-Samples')
+sleep_found = find_health('Sleep', (sleep_start, 'Schlaf ab'), (until, 'Bis morgen'), 'Schlaf-Samples')
 sleep_count = act('count', CustomOutputName='Anzahl Schlaf-Samples', WFCountType='Items',
                   WFInput=attach(out(sleep_found, 'Schlaf-Samples')), Input=attach(out(sleep_found, 'Schlaf-Samples')))
 sleep = lines_of(sleep_found, 'Schlaf-Samples', [
@@ -190,13 +193,13 @@ sleep = lines_of(sleep_found, 'Schlaf-Samples', [
 ], 'Schlaf')
 
 comment('Herz: Ruhepuls und Herzfrequenzvariabilität (HRV) rund um den Vortag, mit Quelle (z. B. Oura oder Watch)')
-rhr_found = find_health('Resting Heart Rate', (sleep_start, 'Schlaf ab'), (now, 'Jetzt'), 'Ruhepuls-Samples')
+rhr_found = find_health('Resting Heart Rate', (sleep_start, 'Schlaf ab'), (until, 'Bis morgen'), 'Ruhepuls-Samples')
 rhr = lines_of(rhr_found, 'Ruhepuls-Samples', [
     var('Repeat Item', prop('Start Date'), datefmt(ISO)),
     var('Repeat Item', prop('Value')),
     var('Repeat Item', prop('Source')),
 ], 'Ruhepuls')
-hrv_found = find_health('Heart Rate Variability', (sleep_start, 'Schlaf ab'), (now, 'Jetzt'), 'HRV-Samples')
+hrv_found = find_health('Heart Rate Variability', (sleep_start, 'Schlaf ab'), (until, 'Bis morgen'), 'HRV-Samples')
 hrv = lines_of(hrv_found, 'HRV-Samples', [
     var('Repeat Item', prop('Start Date'), datefmt(ISO)),
     var('Repeat Item', prop('Value')),
@@ -204,13 +207,13 @@ hrv = lines_of(hrv_found, 'HRV-Samples', [
 ], 'HRV')
 
 comment('Blutdruck: alle Messungen des Vortags (systolisch und diastolisch getrennt, mit Zeit und Quelle)')
-bp_sys_found = find_health('Systolic Blood Pressure', (day, 'Tag'), (now, 'Jetzt'), 'Systolisch-Samples')
+bp_sys_found = find_health('Systolic Blood Pressure', (day, 'Tag'), (until, 'Bis morgen'), 'Systolisch-Samples')
 bp_sys = lines_of(bp_sys_found, 'Systolisch-Samples', [
     var('Repeat Item', prop('Start Date'), datefmt(ISO)),
     var('Repeat Item', prop('Value')),
     var('Repeat Item', prop('Source')),
 ], 'Systolisch')
-bp_dia_found = find_health('Diastolic Blood Pressure', (day, 'Tag'), (now, 'Jetzt'), 'Diastolisch-Samples')
+bp_dia_found = find_health('Diastolic Blood Pressure', (day, 'Tag'), (until, 'Bis morgen'), 'Diastolisch-Samples')
 bp_dia = lines_of(bp_dia_found, 'Diastolisch-Samples', [
     var('Repeat Item', prop('Start Date'), datefmt(ISO)),
     var('Repeat Item', prop('Value')),
@@ -222,7 +225,7 @@ day_str = out(day, 'Tag', datefmt(DAY))
 data = act('dictionary', CustomOutputName='Health-Daten', WFItems=fields([
     ('date', [day_str]),
     ('source', ['shortcut']),
-    ('version', ['7']),
+    ('version', ['8']),
     ('steps', [out(steps, 'Schritte')]),
     ('weight', [out(weight, 'Gewicht')]),
     ('sleep', [out(sleep, 'Schlaf')]),
@@ -236,7 +239,7 @@ data = act('dictionary', CustomOutputName='Health-Daten', WFItems=fields([
     ('stepsSource', [out(col_source, 'Schritt-Quelle')]),
     # Diagnose: Zeitfenster und Anzahl gefundener Messungen (die App ignoriert das Feld)
     ('debug', ['tag=', out(day, 'Tag', datefmt(ISO)), ' ende=', out(day_end, 'Tagesende', datefmt(ISO)),
-               ' schlafAb=', out(sleep_start, 'Schlaf ab', datefmt(ISO)), ' schlafBis=', out(sleep_end, 'Schlaf bis', datefmt(ISO)),
+               ' schlafAb=', out(sleep_start, 'Schlaf ab', datefmt(ISO)), ' bis=', out(until, 'Bis morgen', datefmt(ISO)),
                ' schrittSamples=', out(step_count, 'Anzahl Schritt-Samples'),
                ' schlafSamples=', out(sleep_count, 'Anzahl Schlaf-Samples'),]),
 ]))

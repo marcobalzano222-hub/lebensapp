@@ -3172,7 +3172,7 @@ function cachedDates(dir) {
 const allDates = () => cachedDates('days');
 
 /** Aktuelle Kurzbefehl-Version; ältere Versionen holen die letzte Nacht nicht vollständig. */
-const SHORTCUT_VERSION = 7;
+const SHORTCUT_VERSION = 8;
 function shortcutOutdated() {
   const dates = cachedDates('health');
   const last = dates.length ? Store.get(healthPath(dates[dates.length - 1])) : null;
