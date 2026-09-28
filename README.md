@@ -81,7 +81,7 @@ lebensapp-data-<name>/
 
 - Nicht erfasste Werte fehlen in der Datei; `false` heißt „nicht gemacht“.
 - `refersTo: "previousDay"` (z. B. „Kein Handy vorm Schlafen“) wird am nächsten Tag eingegeben, aber in der Datei des Vortags gespeichert.
-- Krafttraining: `strength` = Liste `{ id, sets: [kg, …] }` (ein Eintrag pro Satz; `null` = Gewicht noch unbekannt, `0` = Körpergewicht).
+- Krafttraining: `strength` = Liste `{ id, sets: [kg, …], reps: [n, …] }` (ein Eintrag pro Satz; `null` = Gewicht noch unbekannt, `0` = Körpergewicht). Wiederholungen werden wie das Gewicht vom letzten Mal vorbelegt.
 - Ernährung: `foods` und `recipes` (Anzahl Einheiten je ID) plus `foodSnap` mit den Nährwerten je Einheit zum Zeitpunkt der Eingabe, damit spätere Änderungen die Historie nicht verfälschen. Ältere Einträge (`meals`, `mealsSnapshot`, `food`) werden weiter mitgezählt.
 - Deaktivieren im Setup löscht nichts (`active: false`); IDs bleiben beim Umbenennen stabil.
 

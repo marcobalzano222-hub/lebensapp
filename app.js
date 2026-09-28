@@ -1089,6 +1089,7 @@ function viewSetup() {
     h('div', { class: 'row-opts' },
       selectEl({ pull: 'Pull', push: 'Push', both: 'Beide' }, it.day || 'both', (v) => { it.day = v; commitConfig('exercises'); }),
       h('label', { class: 'inline' }, 'Schritt', selectEl({ 1: '1 kg', 2: '2 kg', 2.5: '2,5 kg', 5: '5 kg', 10: '10 kg' }, it.step || 5, (v) => { it.step = Number(v); commitConfig('exercises'); })),
+      h('label', { class: 'inline' }, 'Wdh', numEl(it.reps || 10, (v) => { if (v) { it.reps = Math.round(v); commitConfig('exercises'); } })),
       h('button', { type: 'button', class: `toggle${isActive(it) ? ' on' : ''}`, onclick: () => { it.active = !isActive(it); commitConfig('exercises', true); } }, isActive(it) ? 'Aktiv' : 'Inaktiv')));
   const exGroups = Object.entries(MUSCLE_GROUPS).map(([g, label]) => {
     const list = c.exercises.filter((x) => x.group === g);
@@ -1469,7 +1470,8 @@ function numberCard(m, date, slot) {
 
 // ---------- Krafttraining ----------
 // Tap auf eine Übung = 1 Satz mit dem üblichen Gewicht. Jeder Satz speichert sein Gewicht;
-// „üblich“ ist immer das zuletzt verwendete. day.strength = [{ id, sets: [kg, …] }]
+// „üblich“ ist immer das zuletzt verwendete. day.strength = [{ id, sets: [kg, …], reps: [n, …] }]
+// Wiederholungen werden genauso vorbelegt (vom letzten Mal, sonst Standard der Übung).
 
 const MUSCLE_GROUPS = { back: 'Rücken', rear_delt: 'Hintere Schulter', biceps: 'Bizeps', chest: 'Brust', shoulders: 'Schultern', triceps: 'Trizeps', legs: 'Beine', core: 'Core' };
 const STRENGTH_DAYS = { pull: 'Pull', push: 'Push', all: 'Alle' };
@@ -1498,7 +1500,10 @@ const DEFAULT_EXERCISES = [
   ['leg_press', 'Beinpresse', 'legs', 'push', null, 10],
   ['lunges', 'Ausfallschritte', 'legs', 'push', null, 2],
   ['leg_extension', 'Beinstrecker', 'legs', 'push', null, 5],
-].map(([id, name, group, day, weight, step]) => ({ id, name, group, day, weight, step, active: true }));
+].map(([id, name, group, day, weight, step]) => ({
+  id, name, group, day, weight, step, active: true,
+  reps: /curl|seitheben|lateral|face|butterfly|reverse|trizeps|beinstrecker|beinbeuger/i.test(`${id} ${name}`) ? 12 : 10,
+}));
 
 const fmtKg = (kg) => (kg == null ? '? kg' : kg === 0 ? 'KG' : `${fmtNum(kg, kg % 1 ? 1 : 0)} kg`);
 
@@ -1513,10 +1518,21 @@ function lastWeight(ex, date) {
   return ex.weight ?? null;
 }
 
+/** Zuletzt verwendete Wiederholungen einer Übung (vor date), sonst Standard. */
+function lastReps(ex, date) {
+  const dates = cachedDates('days').filter((d) => d < date).reverse();
+  for (const d of dates.slice(0, 120)) {
+    const e = ((getDay(d) || {}).strength || []).find((x) => x.id === ex.id);
+    const reps = e && e.reps ? e.reps.filter((r) => r != null) : [];
+    if (reps.length) return reps[reps.length - 1];
+  }
+  return ex.reps || 10;
+}
+
 /** Heutige Einträge ändern (Kopie), leere Übungen entfernen. */
 function updateStrength(date, fn) {
   updateDay(date, (d) => {
-    const list = (d.strength || []).map((e) => ({ id: e.id, sets: [...e.sets] }));
+    const list = (d.strength || []).map((e) => ({ id: e.id, sets: [...e.sets], reps: e.reps ? [...e.reps] : e.sets.map(() => null) }));
     fn(list);
     d.strength = list.filter((e) => e.sets.length);
     if (!d.strength.length) delete d.strength;
@@ -1527,10 +1543,12 @@ function addSet(date, ex) {
   haptic();
   const today = ((getDay(date) || {}).strength || []).find((e) => e.id === ex.id);
   const w = today && today.sets.length ? today.sets[today.sets.length - 1] : lastWeight(ex, date);
+  const r = today && today.reps && today.reps.length && today.reps[today.reps.length - 1] != null ? today.reps[today.reps.length - 1] : lastReps(ex, date);
   updateStrength(date, (list) => {
     let e = list.find((x) => x.id === ex.id);
-    if (!e) { e = { id: ex.id, sets: [] }; list.push(e); }
+    if (!e) { e = { id: ex.id, sets: [], reps: [] }; list.push(e); }
     e.sets.push(w);
+    e.reps.push(r);
   });
   todayUi.lastExercise = ex.id;
   softRender();
@@ -1538,7 +1556,7 @@ function addSet(date, ex) {
 
 function removeSet(date, ex) {
   haptic();
-  updateStrength(date, (list) => { const e = list.find((x) => x.id === ex.id); if (e) e.sets.pop(); });
+  updateStrength(date, (list) => { const e = list.find((x) => x.id === ex.id); if (e) { e.sets.pop(); e.reps.pop(); } });
   softRender();
 }
 
@@ -1554,6 +1572,19 @@ function setWeight(date, ex, value) {
   });
   softRender();
 }
+
+/** Wiederholungen des letzten Satzes ändern; weitere Sätze übernehmen sie. */
+function setReps(date, ex, value) {
+  updateStrength(date, (list) => {
+    const e = list.find((x) => x.id === ex.id);
+    if (!e || !e.sets.length) return;
+    e.reps[e.sets.length - 1] = Math.max(1, value);
+  });
+  softRender();
+}
+
+/** Geschätztes Maximum (Epley) eines Satzes – macht mehr Wiederholungen bei gleichem Gewicht als Fortschritt sichtbar. */
+const e1rm = (w, r) => (w == null ? null : r ? w * (1 + r / 30) : w);
 
 /** Sätze pro Muskelgruppe über gezählte Tage. */
 function setsByGroup(dates) {
@@ -1596,6 +1627,7 @@ function strengthPanel(date, day) {
     done.length ? h('div', { class: 'sets-list' }, done.map((e) => {
       const ex = config.exercises.find((x) => x.id === e.id) || { id: e.id, name: e.id, step: 5 };
       const last = e.sets[e.sets.length - 1];
+      const lastRep = (e.reps || [])[e.sets.length - 1];
       const step = ex.step || 5;
       const unknown = last == null;
       const input = unknown ? h('input', {
@@ -1607,19 +1639,27 @@ function strengthPanel(date, day) {
       return h('div', { class: `set-row${todayUi.lastExercise === ex.id ? ' current' : ''}` },
         h('div', { class: 'set-info' },
           h('b', {}, ex.name),
-          h('span', { class: 'set-pills' }, e.sets.map((w) => h('i', {}, w == null ? '?' : w === 0 ? 'KG' : fmtNum(w, w % 1 ? 1 : 0))))),
+          h('span', { class: 'set-pills' }, e.sets.map((w, i) => h('i', {},
+            `${w == null ? '?' : w === 0 ? 'KG' : fmtNum(w, w % 1 ? 1 : 0)}${(e.reps || [])[i] != null ? `×${e.reps[i]}` : ''}`)))),
         unknown ? input : h('div', { class: 'kg-btns' },
           h('button', { type: 'button', onclick: () => setWeight(date, ex, Math.max(0, round(last - step, 1))) }, `−${fmtNum(step, step % 1 ? 1 : 0)}`),
           h('span', {}, fmtKg(last)),
           h('button', { type: 'button', onclick: () => setWeight(date, ex, round(last + step, 1)) }, `+${fmtNum(step, step % 1 ? 1 : 0)}`),
-          h('button', { type: 'button', onclick: () => setWeight(date, ex, round(last + step * 2, 1)) }, `+${fmtNum(step * 2, (step * 2) % 1 ? 1 : 0)}`)));
+          h('button', { type: 'button', onclick: () => setWeight(date, ex, round(last + step * 2, 1)) }, `+${fmtNum(step * 2, (step * 2) % 1 ? 1 : 0)}`)),
+        lastRep != null ? h('div', { class: 'kg-btns reps' },
+          h('button', { type: 'button', 'aria-label': 'Eine Wiederholung weniger', onclick: () => setReps(date, ex, lastRep - 1) }, '−1'),
+          h('span', {}, `${lastRep} Wdh`),
+          h('button', { type: 'button', 'aria-label': 'Eine Wiederholung mehr', onclick: () => setReps(date, ex, lastRep + 1) }, '+1')) : null);
     })) : h('p', { class: 'hint' }, 'Tap auf eine Übung = 1 Satz mit deinem üblichen Gewicht. Langer Druck = Satz zurück.'),
 
     groups.map((g) => [
       h('p', { class: 'subhead' }, g === 'legs' ? `Beine · ${legSets} Sätze heute` : MUSCLE_GROUPS[g]),
       h('div', { class: 'food-chips' }, list.filter((x) => x.group === g).map((ex) => {
         const n = setsOf(ex.id);
-        return foodChip(ex.name, fmtKg(n ? done.find((e) => e.id === ex.id).sets.slice(-1)[0] : lastWeight(ex, date)), n,
+        const cur = n ? done.find((e) => e.id === ex.id) : null;
+        const kg = cur ? cur.sets.slice(-1)[0] : lastWeight(ex, date);
+        const reps = cur && cur.reps ? cur.reps.slice(-1)[0] : lastReps(ex, date);
+        return foodChip(ex.name, `${fmtKg(kg)}${kg != null ? ` × ${reps}` : ''}`, n,
           () => addSet(date, ex), () => removeSet(date, ex));
       })),
     ]));
@@ -2536,18 +2576,30 @@ function viewWeek() {
   }).filter(Boolean);
   const curveDates = dates.length >= 84 ? dates : rangeDates(addDays(p.end < today ? p.end : today, -83), p.end < today ? p.end : today);
   const curves = config.exercises.map((ex) => {
-    const pts = curveDates.map((d) => { const e = ((getDay(d) || {}).strength || []).find((x) => x.id === ex.id); const w = e ? e.sets.filter((v) => v != null) : []; return w.length ? Math.max(...w) : null; });
-    const vals = pts.filter((v) => v != null);
+    // Pro Einheit der beste Satz nach geschätztem Maximum
+    const best = curveDates.map((d) => {
+      const e = ((getDay(d) || {}).strength || []).find((x) => x.id === ex.id);
+      if (!e) return null;
+      let top = null;
+      e.sets.forEach((w, i) => { const v = e1rm(w, (e.reps || [])[i]); if (v != null && (!top || v > top.v)) top = { v, w, r: (e.reps || [])[i] }; });
+      return top;
+    });
+    const vals = best.filter(Boolean);
     if (!vals.length) return null;
-    return { ex, pts, first: vals[0], last: vals[vals.length - 1], n: vals.length };
+    return { ex, pts: best.map((b) => (b ? b.v : null)), first: vals[0], last: vals[vals.length - 1], n: vals.length };
   }).filter(Boolean).sort((a, b) => b.n - a.n);
   const strengthContent = setRows.length || curves.length ? [
     setRows.length ? [h('p', { class: 'subhead first' }, 'Sätze pro Muskelgruppe'), setRows] : null,
     curves.length ? [h('p', { class: 'subhead' }, `Gewichte (schwerster Satz, ${formatDateShort(curveDates[0])} – heute)`),
-      h('div', { class: 'curves' }, curves.map((c) => h('div', { class: 'curve' },
-        h('div', {}, h('b', {}, c.ex.name), h('small', {}, `${c.n}× trainiert`)),
-        sparkline([c.pts.filter((v) => v != null)]),
-        h('span', { class: c.last > c.first ? 'up' : '' }, c.last !== c.first ? `${fmtKg(c.first)} → ${fmtKg(c.last)}` : fmtKg(c.last)))))] : null,
+      h('div', { class: 'curves' }, curves.map((c) => {
+        const txt = (b) => `${fmtKg(b.w)}${b.r ? `×${b.r}` : ''}`;
+        const changed = Math.round(c.last.v) !== Math.round(c.first.v);
+        return h('div', { class: 'curve' },
+          h('div', {}, h('b', {}, c.ex.name), h('small', {}, `${c.n}× · Max. ca. ${fmtNum(c.last.v)} kg`)),
+          sparkline([c.pts.filter((v) => v != null)]),
+          h('span', { class: c.last.v > c.first.v ? 'up' : '' }, changed ? `${txt(c.first)} → ${txt(c.last)}` : txt(c.last)));
+      })),
+      h('p', { class: 'hint' }, 'Kurve = geschätztes Maximum aus Gewicht und Wiederholungen. So zählen auch mehr Wiederholungen bei gleichem Gewicht als Fortschritt.')] : null,
   ] : null;
 
   // Was hilft mir? – mindestens 8 Wochen Daten, sonst der gewählte Zeitraum
@@ -2767,7 +2819,7 @@ function exportCsv() {
     for (const [k, v] of Object.entries(d.counters || {})) add('counter', k, v);
     for (const [k, v] of Object.entries(d.foods || {})) add('food', k, v);
     for (const [k, v] of Object.entries(d.recipes || {})) add('recipe', k, v);
-    for (const e of d.strength || []) add('strength', e.id, e.sets.map((w) => w ?? '').join(';'));
+    for (const e of d.strength || []) add('strength', e.id, e.sets.map((w, i) => `${w ?? ''}x${(e.reps || [])[i] ?? ''}`).join(';'));
     const n = nutritionOf(d);
     if (n.any) { add('nutrition', 'kcal', Math.round(n.kcal)); add('nutrition', 'protein', Math.round(n.protein)); add('nutrition', 'fat', Math.round(n.fat)); add('nutrition', 'carbs', Math.round(n.carbs)); }
   }
@@ -2822,7 +2874,7 @@ function exportForClaude(weeks = 8) {
     const foods = [...Object.entries(day.recipes || {}).map(([id, k]) => `${(config.recipes.find((x) => x.id === id) || { name: id }).name} ${k}x`),
       ...Object.entries(day.foods || {}).map(([id, k]) => `${(config.foods.find((x) => x.id === id) || { name: id }).name} ${k}x`)].join('; ');
     r.push(n.any ? Math.round(n.kcal) : '', n.any ? Math.round(n.protein) : '', n.any ? Math.round(n.fat) : '', n.any ? Math.round(n.carbs) : '', foods ? `"${foods.replace(/"/g, '')}"` : '',
-      (day.strength || []).length ? `"${day.strength.map((e) => `${(config.exercises.find((x) => x.id === e.id) || { name: e.id }).name} ${e.sets.map((w) => w ?? '?').join('/')}kg`).join('; ')}"` : '',
+      (day.strength || []).length ? `"${day.strength.map((e) => `${(config.exercises.find((x) => x.id === e.id) || { name: e.id }).name} ${e.sets.map((w, i) => `${w ?? '?'}x${(e.reps || [])[i] ?? '?'}`).join(' ')}`).join('; ')}"` : '',
       ...training.map((t) => { const e = tr.filter((x) => x.id === t.id); return e.length ? (t.type === 'minutes' ? e.reduce((a, x) => a + (x.min || 0), 0) : e.length) : ''; }),
       hl.steps ?? '', hl.sleepMin ?? '', hl.deepMin ?? '', hl.remMin ?? '', hl.restingHr ?? '', hl.hrv ?? '');
     rows.push(r.join(','));
@@ -2833,7 +2885,7 @@ function exportForClaude(weeks = 8) {
     ...counters.map((c) => `${c.id} = ${c.name} (Anzahl pro Tag, negativ – weniger ist besser)`),
     ...training.map((t) => `${t.id} = ${t.name} (${t.type === 'minutes' ? 'Minuten' : 'Einheiten'})`),
     'steps, sleep_min, deep_min, rem_min, resting_hr, hrv_ms = aus Apple Health (Schlaf = Nacht vor dem Datum)',
-    'strength = Krafttraining: Übung mit Gewicht je Satz (kg, z. B. 80/80/85kg = 3 Sätze)',
+    'strength = Krafttraining: Übung mit kg x Wiederholungen je Satz (z. B. Latzug 80x10 80x10 85x8 = 3 Sätze)',
     'kcal, protein, fat, carbs = Tagessumme (g); foods = gegessene Lebensmittel/Rezepte mit Anzahl Einheiten; Ziel: wenig Carbs',
     'pause = Pause-Tag (krank, Reise …) – bei Auswertungen ausklammern',
   ];

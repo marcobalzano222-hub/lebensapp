@@ -515,3 +515,4 @@ details.cat .rows { padding: 0 8px 8px; }
 .curve svg path { fill: none; stroke: var(--accent); stroke-width: 1.6; }
 .curve > span { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--muted); }
 .curve > span.up { color: var(--accent); }
+.kg-btns.reps span { min-width: 56px; font-weight: 600; }
