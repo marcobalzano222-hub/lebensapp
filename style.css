@@ -579,3 +579,4 @@ input[type=search] { width: 100%; min-height: 44px; padding: 8px 12px; border-ra
 .night-row { display: flex; align-items: baseline; gap: 10px; font-size: 14px; }
 .night-row b { font-variant-numeric: tabular-nums; }
 .night-row .small { margin-left: auto; }
+.warn { font-size: 14px; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--pending) 15%, transparent); border: 1px solid color-mix(in srgb, var(--pending) 45%, transparent); }

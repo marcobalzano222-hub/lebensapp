@@ -1344,7 +1344,8 @@ function viewSetup() {
         onclick: () => { c.health.shortcut = !c.health.shortcut; commitConfig('health', true); },
       }, c.health.shortcut ? 'Kurzbefehl installiert ✓' : 'Kurzbefehl ist installiert')),
       h('p', { class: 'hint' }, 'Dann erscheint morgens ein Knopf, der die Daten von gestern überträgt, falls sie noch fehlen.'),
-      lastHealth ? healthStatusCard(lastHealth) : h('p', { class: 'hint' }, 'Noch keine Health-Daten empfangen.'),
+      shortcutOutdated() ? outdatedHint() : null,
+    lastHealth ? healthStatusCard(lastHealth) : h('p', { class: 'hint' }, 'Noch keine Health-Daten empfangen.'),
       stepSources.length > 1 ? [
         h('p', { class: 'hint' }, 'Reihenfolge der Quellen – so wie in der Health-App unter „Datenquellen und Zugriff“. Wo sich Messungen überschneiden (Schritte, Schlaf, Herz), zählt die obere Quelle.'),
         h('div', { class: 'rows' }, stepSources.map((src, i) => h('div', { class: 'row' }, h('div', { class: 'row-main' },
@@ -2186,13 +2187,15 @@ function nightStats(hl) {
 /** „Letzte Nacht“ im Reiter Heute. */
 function lastNightSection(date) {
   const hl = getHealth(date);
+  const outdated = date === logicalToday() && shortcutOutdated() ? outdatedHint() : null;
   if (!hl || !hl.sleepMin) {
     if (!config.health.shortcut || date !== logicalToday()) return null;
-    return section('night', 'Letzte Nacht', { text: 'keine Daten' }, h('p', { class: 'hint' },
+    return section('night', 'Letzte Nacht', { text: 'keine Daten' }, outdated || h('p', { class: 'hint' },
       'Noch keine Schlafdaten für letzte Nacht. Lauf den Kurzbefehl (Knopf oben) – kommt dann immer noch nichts: Health → Profilbild → Apps → Kurzbefehle → „Schlaf“ lesen erlauben, und in der Oura-App das Schreiben von Schlaf nach Apple Health aktivieren.'));
   }
   const pct = (v) => (v != null && hl.sleepMin ? ` (${Math.round((v / hl.sleepMin) * 100)} %)` : '');
   return section('night', 'Letzte Nacht', { text: fmtDuration(hl.sleepMin) }, [
+    outdated,
     h('div', { class: 'night-head' },
       h('div', {}, h('b', {}, fmtDuration(hl.sleepMin)), h('span', {}, 'geschlafen')),
       hl.bedTime ? h('div', {}, h('b', {}, `${clock(hl.bedTime)} – ${clock(hl.wakeTime)}`), h('span', {}, 'im Bett')) : null),
@@ -3167,6 +3170,16 @@ function cachedDates(dir) {
   return [...set].filter(has).sort();
 }
 const allDates = () => cachedDates('days');
+
+/** Aktuelle Kurzbefehl-Version; ältere Versionen holen die letzte Nacht nicht vollständig. */
+const SHORTCUT_VERSION = 7;
+function shortcutOutdated() {
+  const dates = cachedDates('health');
+  const last = dates.length ? Store.get(healthPath(dates[dates.length - 1])) : null;
+  return !!(last && last.data && !(looseNum(last.data.version) >= SHORTCUT_VERSION));
+}
+const outdatedHint = () => h('p', { class: 'warn' }, 'Auf deinem iPhone läuft noch eine ältere Version des Kurzbefehls. Die holt die letzte Nacht nicht vollständig. Bitte löschen und ',
+  h('a', { href: 'shortcuts/Lebensapp-Health.shortcut' }, 'hier neu laden'), '.');
 
 /** Was zuletzt aus Apple Health angekommen ist – zum Prüfen, ob der Kurzbefehl funktioniert. */
 function healthStatusCard(date) {

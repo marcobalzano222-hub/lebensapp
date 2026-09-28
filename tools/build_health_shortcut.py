@@ -140,7 +140,7 @@ def github_request(method, url_parts, token, body=None):
 token = act('gettext', CustomOutputName='Token', WFTextActionText='github_pat_…')
 repo = act('gettext', CustomOutputName='Repo', WFTextActionText='marcobalzano222-hub/lebensapp-data-satoshi')
 
-comment('Lebensapp Health (Version 6): schreibt Schritte, Gewicht, Schlaf, Ruhepuls, HRV und Blutdruck von gestern und heute bis jetzt (inkl. letzter Nacht) als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
+comment('Lebensapp Health (Version 7): schreibt Schritte, Gewicht, Schlaf, Ruhepuls, HRV und Blutdruck von gestern und heute bis jetzt (inkl. letzter Nacht) als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
 
 now = act('date', CustomOutputName='Jetzt', WFDateActionMode='Current Date')
 yesterday = adjust(now, 'Gestern', 'Subtract', 1, 'days')
@@ -222,6 +222,7 @@ day_str = out(day, 'Tag', datefmt(DAY))
 data = act('dictionary', CustomOutputName='Health-Daten', WFItems=fields([
     ('date', [day_str]),
     ('source', ['shortcut']),
+    ('version', ['7']),
     ('steps', [out(steps, 'Schritte')]),
     ('weight', [out(weight, 'Gewicht')]),
     ('sleep', [out(sleep, 'Schlaf')]),
