@@ -433,8 +433,16 @@ function sleepStats(samples, date) {
   const src = [...new Set(asleep.map((x) => x.src))].sort((a, b) => sourceRank(a) - sourceRank(b) || a.localeCompare(b))[0];
   const mine = asleep.filter((x) => x.src === src);
   const stage = (k) => { const iv = mine.filter((x) => x.stage === k).map((x) => [x.s, x.e]); return iv.length ? unionMinutes(iv) : null; };
+  const bed = Math.min(...mine.map((x) => x.s)), wake = Math.max(...mine.map((x) => x.e));
+  // Wachphasen derselben Quelle innerhalb der Nacht
+  const awake = samples
+    .filter((x) => /wach|awake/i.test(x.value || '') && (x.source || '').trim() === src)
+    .map((x) => ({ s: parseHealthTime(x.start), e: parseHealthTime(x.end), stage: 'awake' }))
+    .filter((x) => Number.isFinite(x.s) && Number.isFinite(x.e) && x.e > x.s && x.s >= bed && x.e <= wake);
   return {
     total: unionMinutes(mine.map((x) => [x.s, x.e])),
+    awake: awake.length ? unionMinutes(awake.map((x) => [x.s, x.e])) : null,
+    timeline: [...mine, ...awake].map((x) => ({ s: x.s, e: x.e, stage: x.stage })).sort((a, b) => a.s - b.s),
     bedTime: Math.min(...mine.map((x) => x.s)),
     wakeTime: Math.max(...mine.map((x) => x.e)),
     deep: stage('deep'), rem: stage('rem'), core: stage('core'),
@@ -471,13 +479,60 @@ function heartValue(v, date) {
 
 const healthCache = new Map();   // path → { sha, parsed }
 
+/**
+ * Rohdaten für einen Tag. Seit Kurzbefehl v6 enthält jede Datei „gestern + heute bis jetzt“;
+ * Daten für date stehen daher in health/date.json (vollständig) und health/(date−1).json (Teil des Tages,
+ * inkl. der Nacht, die am Morgen von date endet). Beide werden zusammengeführt, doppelte Zeilen entfernt.
+ */
+function healthRaw(date) {
+  const own = Store.get(healthPath(date)), prev = Store.get(healthPath(addDays(date, -1)));
+  const files = [own, prev].filter((f) => f && f.data && !f.data.invalid);
+  if (!files.length) return null;
+  const key = files.map((f) => f.sha).join('+');
+  const text = (k) => [...new Set(files.flatMap((f) => (typeof f.data[k] === 'string' ? f.data[k].split(/\r?\n/) : [])).filter((x) => x.trim()))].join('\n');
+  const raw = {};
+  for (const k of ['sleep', 'restingHr', 'hrv', 'bpSys', 'bpDia', 'workouts', 'weight']) raw[k] = text(k);
+  // Schritte pro Tag (gruppiert): je Tag der größte Wert – ein früherer Lauf kennt nur einen Teil des Tages
+  const perDay = {};
+  for (const f of files) {
+    if (typeof f.data.steps !== 'string') continue;
+    for (const l of f.data.steps.split(/\r?\n/)) {
+      const [st, v] = l.split('|');
+      const t = parseHealthTime(st), n = looseNum(v);
+      if (!Number.isFinite(t) || n == null) continue;
+      const d = ymd(new Date(t));
+      if (!perDay[d] || n > perDay[d].n) perDay[d] = { st, n };
+    }
+  }
+  raw.steps = Object.values(perDay).map((x) => `${x.st}|${x.n}`).join('\n');
+  // Schritt-Einzelwerte: Spalten zusammenführen, gleiche Messungen nur einmal
+  const rows = new Map();
+  for (const f of files) {
+    if (!f.data.stepsValue) continue;
+    const c = (k) => String(f.data[k] || '').split(/\r?\n/);
+    const st = c('stepsStart'), en = c('stepsEnd'), va = c('stepsValue'), so = c('stepsSource');
+    st.forEach((x, i) => { if (x.trim()) rows.set(`${x}|${en[i]}|${va[i]}|${so[i]}`, [x, en[i], va[i], so[i]]); });
+  }
+  if (rows.size) {
+    const list = [...rows.values()];
+    raw.stepsStart = list.map((r) => r[0]).join('\n'); raw.stepsEnd = list.map((r) => r[1]).join('\n');
+    raw.stepsValue = list.map((r) => r[2]).join('\n'); raw.stepsSource = list.map((r) => r[3]).join('\n');
+  }
+  // Alte Dateien mit Einzelzahlen gelten nur für ihren eigenen Tag
+  if (own && own.data && !own.data.invalid) {
+    for (const k of ['steps', 'weight', 'sleepMin']) if (typeof own.data[k] === 'number') raw[k] = own.data[k];
+  }
+  raw.debug = own && own.data ? own.data.debug : null;
+  return { raw, key, hasOwn: !!(own && own.data && !own.data.invalid) };
+}
+
 /** Aufbereitete Health-Daten eines Tages oder null. */
 function getHealth(date) {
-  const f = Store.get(healthPath(date));
-  if (!f || !f.data || f.data.invalid) return null;
+  const src = healthRaw(date);
+  if (!src) return null;
   const hit = healthCache.get(date);
-  if (hit && hit.sha === f.sha && hit.raw === f.data) return hit.parsed;
-  const raw = f.data;
+  if (hit && hit.key === src.key) return hit.parsed;
+  const raw = src.raw;
   const sleep = healthLines(raw.sleep, ['value', 'start', 'end', 'source']);
   const sleepInfo = sleepStats(sleep, date);
   const rhr = heartValue(raw.restingHr, date), hrv = heartValue(raw.hrv, date);
@@ -509,13 +564,20 @@ function getHealth(date) {
     coreMin: sleepInfo ? sleepInfo.core : null,
     bedTime: sleepInfo ? sleepInfo.bedTime : null,
     wakeTime: sleepInfo ? sleepInfo.wakeTime : null,
+    awakeMin: sleepInfo ? sleepInfo.awake : null,
+    timeline: sleepInfo ? sleepInfo.timeline : null,
+    sleepSource: sleepInfo ? sleepInfo.source : null,
     restingHr: rhr.value,
     bp: bp ? bp.value : null,
     hrv: hrv.value,
     sources: [...new Set([...(dedup ? Object.keys(dedup.perSource) : []), ...(sleepInfo ? sleepInfo.sources : []), ...rhr.sources, ...hrv.sources, ...(bp ? bp.sources : [])].filter((x) => x && x !== '?'))],
     workouts,
   };
-  healthCache.set(date, { sha: f.sha, raw: f.data, parsed });
+  if (![parsed.steps, parsed.weight, parsed.sleepMin, parsed.restingHr, parsed.hrv, parsed.bp].some((v) => v != null) && !workouts.length && !src.hasOwn) {
+    healthCache.set(date, { key: src.key, parsed: null });
+    return null;
+  }
+  healthCache.set(date, { key: src.key, parsed });
   return parsed;
 }
 
@@ -2078,6 +2140,72 @@ function counterBlock(date, day) {
   }));
 }
 
+// ---------- Schlaf im Detail ----------
+
+const STAGE_ROWS = [['awake', 'Wach'], ['rem', 'REM'], ['core', 'Kern'], ['deep', 'Tief']];
+const clock = (ms) => { const d = new Date(ms); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+
+/** Schlafphasen einer Nacht als Zeitstrahl (wie in der Health-App): Wach oben, Tief unten. */
+function hypnogram(hl, { compact = false } = {}) {
+  const tl = hl && hl.timeline;
+  if (!tl || !tl.length) return null;
+  const start = hl.bedTime, end = hl.wakeTime, span = end - start || 1;
+  const W = 300, rowH = compact ? 7 : 16, gap = compact ? 2 : 6, left = compact ? 0 : 34;
+  const H = STAGE_ROWS.length * (rowH + gap) + (compact ? 0 : 16);
+  const x = (t) => left + ((t - start) / span) * (W - left);
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, class: `hypno${compact ? ' compact' : ''}`, role: 'img', 'aria-label': 'Schlafphasen im Verlauf der Nacht' });
+  STAGE_ROWS.forEach(([k, label], i) => {
+    const y = i * (rowH + gap);
+    svg.append(svgEl('rect', { x: left, y, width: W - left, height: rowH, class: 'hy-track', rx: 2 }));
+    if (!compact) svg.append(svgEl('text', { x: 0, y: y + rowH - 4, class: 'hy-lbl' }, label));
+    for (const p of tl) {
+      const stage = p.stage === 'asleep' ? 'core' : p.stage;
+      if (stage !== k) continue;
+      svg.append(svgEl('rect', { x: x(p.s), y, width: Math.max(0.8, x(p.e) - x(p.s)), height: rowH, class: `hy-${k}${p.stage === 'asleep' ? ' hy-unspec' : ''}`, rx: 1 }));
+    }
+  });
+  if (!compact) {
+    const yT = H - 3;
+    svg.append(svgEl('text', { x: left, y: yT, class: 'hy-time', 'text-anchor': 'start' }, clock(start)));
+    svg.append(svgEl('text', { x: W, y: yT, class: 'hy-time', 'text-anchor': 'end' }, clock(end)));
+    // volle Stunden als feine Linien
+    for (let t = new Date(start).setMinutes(60, 0, 0); t < end; t += 3600000) {
+      svg.append(svgEl('line', { x1: x(t), x2: x(t), y1: 0, y2: H - 16, class: 'hy-hour' }));
+    }
+  }
+  return svg;
+}
+
+/** Kennzahlen einer Nacht als kompakte Zeile. */
+function nightStats(hl) {
+  const cell = (label, v, cls) => (v != null ? h('div', { class: 'ns' }, h('i', { class: cls }), h('span', {}, label), h('b', {}, fmtDuration(v))) : null);
+  return h('div', { class: 'night-stats' },
+    cell('Tief', hl.deepMin, 's-deep'), cell('REM', hl.remMin, 's-rem'), cell('Kern', hl.coreMin, 's-core'), cell('Wach', hl.awakeMin, 's-awake'));
+}
+
+/** „Letzte Nacht“ im Reiter Heute. */
+function lastNightSection(date) {
+  const hl = getHealth(date);
+  if (!hl || !hl.sleepMin) {
+    if (!config.health.shortcut || date !== logicalToday()) return null;
+    return section('night', 'Letzte Nacht', { text: 'keine Daten' }, h('p', { class: 'hint' },
+      'Noch keine Schlafdaten für letzte Nacht. Lauf den Kurzbefehl (Knopf oben) – kommt dann immer noch nichts: Health → Profilbild → Apps → Kurzbefehle → „Schlaf“ lesen erlauben, und in der Oura-App das Schreiben von Schlaf nach Apple Health aktivieren.'));
+  }
+  const pct = (v) => (v != null && hl.sleepMin ? ` (${Math.round((v / hl.sleepMin) * 100)} %)` : '');
+  return section('night', 'Letzte Nacht', { text: fmtDuration(hl.sleepMin) }, [
+    h('div', { class: 'night-head' },
+      h('div', {}, h('b', {}, fmtDuration(hl.sleepMin)), h('span', {}, 'geschlafen')),
+      hl.bedTime ? h('div', {}, h('b', {}, `${clock(hl.bedTime)} – ${clock(hl.wakeTime)}`), h('span', {}, 'im Bett')) : null),
+    hypnogram(hl),
+    nightStats(hl),
+    h('p', { class: 'hint' }, [
+      hl.deepMin != null ? `Tief${pct(hl.deepMin)}` : null, hl.remMin != null ? `REM${pct(hl.remMin)}` : null,
+      hl.hrv != null ? `HRV ${hl.hrv} ms` : null, hl.restingHr != null ? `Ruhepuls ${hl.restingHr}` : null,
+      hl.sleepSource ? `Quelle: ${hl.sleepSource}` : null,
+    ].filter(Boolean).join(' · ')),
+  ]);
+}
+
 /** Kleine Gewohnheiten nach optionaler Gruppe (z. B. „Supplements“) bündeln; ohne Gruppe zuerst. */
 function habitGroups(list) {
   const groups = new Map();
@@ -2146,6 +2274,7 @@ function viewToday() {
     h('div', { class: `checkin${paused ? ' paused' : ''}` },
       paused ? h('p', { class: 'paused-note' }, 'Pause-Tag: zählt nicht in Durchschnitte und Wochenziele. Eingaben sind trotzdem möglich.') : null,
       healthButton(date, today),
+      lastNightSection(date),
       section('measures', 'Messwerte', countSum('measures'), measures.map((m) => metricBlock(m, date))),
       section('habits', 'Gewohnheiten', countSum('habits'), [
         p1Habits.length ? h('div', { class: 'tiles' }, p1Habits.map((x) => boolTile(x, date, null, false))) : null,
@@ -2335,7 +2464,7 @@ function levelInfo() {
 // ---------- Auswertung: Zeitraum ----------
 
 const PERIODS = { week: 'Woche', month: 'Monat', quarter: '3 Monate' };
-const statsUi = { kind: LS.get('la.ui.period', 'week'), offset: 0 };
+const statsUi = { kind: LS.get('la.ui.period', 'week'), offset: 0, night: null };
 const rangeDates = (s, e) => { const out = []; for (let d = s; d <= e; d = addDays(d, 1)) out.push(d); return out; };
 
 /** Zeitraum mit Versatz (0 = aktuell): Woche Mo–So, Monat, 3 Kalendermonate. */
@@ -2753,6 +2882,19 @@ function viewWeek() {
     hasSleep ? section('s-sleep', 'Schlaf', { text: avgOf('sleepMin') != null ? `Ø ${fmtDuration(avgOf('sleepMin'))}` : '' }, [
       sleepChart(dates),
       legend([['s-deep', 'Tief'], ['s-rem', 'REM'], ['s-core', 'Kern'], ['s-other', 'sonstiger Schlaf']]),
+      kind === 'week' ? h('div', { class: 'nights' }, dates.filter((d) => d <= today).slice().reverse().map((d) => {
+        const n = getHealth(d);
+        if (!n || !n.sleepMin) return null;
+        const open = statsUi.night === d;
+        return h('button', { type: 'button', class: `night${open ? ' open' : ''}`, onclick: () => { statsUi.night = open ? null : d; softRender(); } },
+          h('div', { class: 'night-row' },
+            h('span', {}, `${WD_SHORT[parseYmd(d).getDay()]} ${formatDateShort(d)}`),
+            h('b', {}, fmtDuration(n.sleepMin)),
+            h('span', { class: 'small muted' }, [n.deepMin != null ? `Tief ${fmtDuration(n.deepMin)}` : null, n.remMin != null ? `REM ${fmtDuration(n.remMin)}` : null].filter(Boolean).join(' · '))),
+          hypnogram(n, { compact: !open }),
+          open ? nightStats(n) : null,
+          open && n.bedTime ? h('p', { class: 'hint' }, `${clock(n.bedTime)} – ${clock(n.wakeTime)}${n.hrv != null ? ` · HRV ${n.hrv} ms` : ''}${n.restingHr != null ? ` · Ruhepuls ${n.restingHr}` : ''}`) : null);
+      })) : null,
       sleepSum ? h('p', { class: 'hint' }, sleepSum) : null,
       rhythm ? h('div', { class: 'rhythm' },
         h('div', {}, h('span', {}, 'Einschlafen Ø'), h('b', {}, rhythm.bed), h('small', {}, `± ${rhythm.bedSd} min`)),
@@ -3038,7 +3180,7 @@ function healthStatusCard(date) {
     hl && hl.stepSources && Object.keys(hl.stepSources).length > 1
       ? row('Quellen (roh)', Object.entries(hl.stepSources).map(([k, v]) => `${k}: ${fmtNum(v)}`).join(' · ')) : null,
     row('Gewicht', hl && hl.weight != null ? `${fmtNum(hl.weight, 1)} kg` : 'fehlt'),
-    row('Schlaf', hl && hl.sleepMin != null ? fmtDuration(hl.sleepMin) : 'fehlt'),
+    row('Schlaf', hl && hl.sleepMin != null ? fmtDuration(hl.sleepMin) : (/schlafSamples=0\b/.test((f && f.data && f.data.debug) || '') ? 'fehlt – Kurzbefehl fand keine Schlafdaten' : 'fehlt')),
     hl && (hl.deepMin != null || hl.remMin != null) ? row('davon Tief / REM', `${hl.deepMin != null ? fmtDuration(hl.deepMin) : '–'} / ${hl.remMin != null ? fmtDuration(hl.remMin) : '–'}`) : null,
     row('Blutdruck', hl && hl.bp ? `${hl.bp.sys}/${hl.bp.dia}` : 'fehlt'),
     row('Ruhepuls', hl && hl.restingHr != null ? `${hl.restingHr} bpm` : 'fehlt'),
