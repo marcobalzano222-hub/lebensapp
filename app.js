@@ -619,14 +619,20 @@ function trainingFor(date) {
 }
 
 /** Wert einer Kennzahl an einem Tag – bei Quelle „health“ aus Apple Health. */
+function healthMetric(m, date) {
+  const hl = getHealth(date);
+  if (!hl) return null;
+  if (m.type === 'bloodpressure') return hl.bp || null;
+  return m.id === 'weight' ? hl.weight : null;
+}
+
+/**
+ * Wert einer Kennzahl an einem Tag. Quelle „health“: nur Apple Health.
+ * Sonst: eigener Eintrag, und falls keiner da ist, der Wert aus Apple Health (z. B. Waage).
+ */
 function metricOn(m, date) {
-  if (m.source === 'health') {
-    const hl = getHealth(date);
-    if (!hl) return null;
-    if (m.type === 'bloodpressure') return hl.bp;
-    return m.id === 'weight' ? hl.weight : null;
-  }
-  return ((getDay(date) || {}).metrics || {})[m.id];
+  if (m.source === 'health') return healthMetric(m, date);
+  return ((getDay(date) || {}).metrics || {})[m.id] ?? healthMetric(m, date);
 }
 
 // ============================================================
@@ -1085,7 +1091,7 @@ function viewSetup() {
     slotSelect(it, 'metrics'),
     prioSelect(it, 'metrics'),
     (it.id === 'weight' && it.type === 'number') || it.type === 'bloodpressure'
-      ? selectEl({ manual: 'Manuell', health: 'Apple Health' }, it.source || 'manual', (v) => { it.source = v; commitConfig('metrics', true); })
+      ? selectEl({ manual: 'Manuell + Health', health: 'Nur Apple Health' }, it.source || 'manual', (v) => { it.source = v; commitConfig('metrics', true); })
       : it.type === 'number'
       ? textEl(it.unit, (v) => { it.unit = v.trim(); commitConfig('metrics'); }, { placeholder: 'Einheit', 'aria-label': 'Einheit', style: 'max-width:70px' })
       : h('span', { class: 'small muted' }, METRIC_TYPES[it.type] || it.type),
@@ -1120,6 +1126,7 @@ function viewSetup() {
     h('div', { class: 'row-main' },
       textEl(it.name, (v) => { if (v.trim()) { it.name = v.trim(); commitConfig('foods'); } }, { 'aria-label': 'Name' }),
       textEl(it.unit, (v) => { it.unit = v.trim(); commitConfig('foods'); }, { 'aria-label': 'Einheit', placeholder: 'Einheit', style: 'max-width:120px' })),
+    (() => { const calc = 4 * (it.protein || 0) + 4 * (it.carbs || 0) + 9 * (it.fat || 0); return it.kcal && Math.abs(it.kcal - calc) > Math.max(15, it.kcal * 0.15) ? h('p', { class: 'macro-check bad' }, `Nährwerte ergeben ${fmtNum(calc)} kcal statt ${fmtNum(it.kcal)}.`) : null; })(),
     h('div', { class: 'row-opts' }, macroInputs(it, 'foods'),
       h('button', { type: 'button', class: `toggle${isActive(it) ? ' on' : ''}`, onclick: () => { it.active = !isActive(it); commitConfig('foods', true); } }, isActive(it) ? 'Aktiv' : 'Inaktiv')));
   const foodCats = Object.entries(FOOD_CATS).map(([cat, label]) => {
@@ -1388,10 +1395,10 @@ const habitValue = (hb, date) => ((getDay(habitDate(hb, date)) || {}).habits || 
 const metricValue = (m, date) => ((getDay(date) || {}).metrics || {})[m.id];
 const showMetric = (m) => isActive(m) && m.source !== 'health';
 
-/** Letzter erfasster Wert einer Kennzahl vor (oder an) einem Datum – für die Vorbelegung. */
-function lastMetricValue(id, date, maxDays = 90) {
+/** Letzter Wert einer Kennzahl vor (oder an) einem Datum – eigene Einträge oder Apple Health – für die Vorbelegung. */
+function lastMetricValue(m, date, maxDays = 90) {
   for (let i = 0; i <= maxDays; i++) {
-    const v = ((getDay(addDays(date, -i)) || {}).metrics || {})[id];
+    const v = metricOn(m, addDays(date, -i));
     if (v != null) return v;
   }
   return null;
@@ -1411,7 +1418,7 @@ function dayItems() {
 function sectionCounts(date) {
   const { habits, metrics } = dayItems();
   const count = (list, has) => ({ done: list.filter(has).length, total: list.length });
-  const mHas = (m) => metricValue(m, date) != null;
+  const mHas = (m) => metricOn(m, date) != null;
   return {
     measures: count(metrics.filter((m) => m.type !== 'scale10'), mHas),
     habits: count(habits, (x) => habitValue(x, date) !== undefined),
@@ -1528,9 +1535,10 @@ function stepper({ value, decimals = 0, step = 1, label, onSet, inputmode = 'num
 
 function bpCard(m, date, slot) {
   const v = metricValue(m, date);
-  const last = lastMetricValue(m.id, addDays(date, -1));
-  const shown = v || last || { sys: 120, dia: 80 };
-  const prefill = !v;
+  const hv = v ? null : healthMetric(m, date);
+  const last = lastMetricValue(m, addDays(date, -1));
+  const shown = v || hv || last || { sys: 120, dia: 80 };
+  const prefill = !v && !hv;
   const save = (patch, rerender) => {
     const next = { sys: shown.sys, dia: shown.dia, ...(v && v.pulse ? { pulse: v.pulse } : {}), ...patch };
     if (next.pulse == null) delete next.pulse;
@@ -1545,8 +1553,8 @@ function bpCard(m, date, slot) {
   });
   const card = h('div', { class: `metric-card${prefill ? ' prefill' : ''}` },
     h('div', { class: 'metric-head' },
-      h('span', {}, m.name, prefill && last ? ' · letzter Wert' : ''),
-      prefill
+      h('span', {}, m.name, hv ? ' · aus Apple Health' : prefill && last ? ' · letzter Wert' : ''),
+      hv ? null : prefill
         ? h('button', { type: 'button', onclick: () => { haptic(); save({}, true); } }, 'Übernehmen')
         : h('button', { type: 'button', class: 'muted', onclick: () => { setMetric(m, date, null); softRender(); } }, 'Löschen')),
     h('div', { class: 'steppers' },
@@ -1559,17 +1567,18 @@ function bpCard(m, date, slot) {
 function numberCard(m, date, slot) {
   const decimals = m.decimals ?? 1;
   const v = metricValue(m, date);
-  const last = lastMetricValue(m.id, addDays(date, -1));
-  const shown = v ?? last;
-  const prefill = v == null;
+  const hv = v == null ? healthMetric(m, date) : null;
+  const last = lastMetricValue(m, addDays(date, -1));
+  const shown = v ?? hv ?? last;
+  const prefill = v == null && hv == null;
   const save = (n, rerender) => {
     setMetric(m, date, n);
     if (rerender) softRender(); else { card.classList.remove('prefill'); updateProgress(date, slot); }
   };
   const card = h('div', { class: `metric-card${prefill ? ' prefill' : ''}` },
     h('div', { class: 'metric-head' },
-      h('span', {}, m.name, m.unit ? ` (${m.unit})` : '', prefill && last != null ? ' · letzter Wert' : ''),
-      prefill
+      h('span', {}, m.name, m.unit ? ` (${m.unit})` : '', hv != null ? ' · aus Apple Health' : prefill && last != null ? ' · letzter Wert' : ''),
+      hv != null ? null : prefill
         ? (shown != null ? h('button', { type: 'button', onclick: () => { haptic(); save(shown, true); } }, 'Übernehmen') : null)
         : h('button', { type: 'button', class: 'muted', onclick: () => save(null, true) }, 'Löschen')),
     stepper({ value: shown, decimals, step: 10 ** -decimals, label: '', inputmode: decimals ? 'decimal' : 'numeric', onSet: save }));
@@ -1662,6 +1671,18 @@ function addSet(date, ex) {
   softRender();
 }
 
+/** Einen bestimmten Satz (Index) oder die ganze Übung (index = null) von heute entfernen. */
+function removeStrength(date, ex, index = null) {
+  haptic();
+  updateStrength(date, (list) => {
+    const i = list.findIndex((x) => x.id === ex.id);
+    if (i === -1) return;
+    if (index == null) list.splice(i, 1);
+    else { list[i].sets.splice(index, 1); list[i].reps.splice(index, 1); }
+  });
+  softRender();
+}
+
 function removeSet(date, ex) {
   haptic();
   updateStrength(date, (list) => { const e = list.find((x) => x.id === ex.id); if (e) { e.sets.pop(); e.reps.pop(); } });
@@ -1746,9 +1767,12 @@ function strengthPanel(date, day) {
       if (unknown && todayUi.lastExercise === ex.id) setTimeout(() => { if (input && document.body.contains(input)) input.focus(); }, 60);
       return h('div', { class: `set-row${todayUi.lastExercise === ex.id ? ' current' : ''}` },
         h('div', { class: 'set-info' },
-          h('b', {}, ex.name),
-          h('span', { class: 'set-pills' }, e.sets.map((w, i) => h('i', {},
-            `${w == null ? '?' : w === 0 ? 'KG' : fmtNum(w, w % 1 ? 1 : 0)}${(e.reps || [])[i] != null ? `×${e.reps[i]}` : ''}`)))),
+          h('div', { class: 'set-title' }, h('b', {}, ex.name),
+            h('button', { type: 'button', class: 'icon-btn small', 'aria-label': `${ex.name} komplett entfernen`, onclick: () => { if (confirm(`${ex.name} mit allen ${e.sets.length} Sätzen entfernen?`)) removeStrength(date, ex); } }, '🗑')),
+          h('span', { class: 'set-pills' }, e.sets.map((w, i) => h('button', {
+            type: 'button', class: 'pill', 'aria-label': `Satz ${i + 1} entfernen`,
+            onclick: () => { if (confirm(`Satz ${i + 1} entfernen?`)) removeStrength(date, ex, i); },
+          }, `${w == null ? '?' : w === 0 ? 'KG' : fmtNum(w, w % 1 ? 1 : 0)}${(e.reps || [])[i] != null ? `×${e.reps[i]}` : ''}`)))),
         unknown ? input : h('div', { class: 'kg-btns' },
           h('button', { type: 'button', onclick: () => setWeight(date, ex, Math.max(0, round(last - step, 1))) }, `−${fmtNum(step, step % 1 ? 1 : 0)}`),
           h('span', {}, fmtKg(last)),
@@ -1759,6 +1783,7 @@ function strengthPanel(date, day) {
           h('span', {}, `${lastRep} Wdh`),
           h('button', { type: 'button', 'aria-label': 'Eine Wiederholung mehr', onclick: () => setReps(date, ex, lastRep + 1) }, '+1')) : null);
     })) : h('p', { class: 'hint' }, 'Tap auf eine Übung = 1 Satz mit deinem üblichen Gewicht. Langer Druck = Satz zurück.'),
+    done.length ? h('p', { class: 'hint' }, 'Satz antippen = diesen Satz löschen · 🗑 = ganze Übung löschen') : null,
 
     groups.map((g) => [
       h('p', { class: 'subhead' }, g === 'legs' ? `Beine · ${legSets} Sätze heute` : MUSCLE_GROUPS[g]),
@@ -1770,7 +1795,17 @@ function strengthPanel(date, day) {
         return foodChip(ex.name, `${fmtKg(kg)}${kg != null ? ` × ${reps}` : ''}`, n,
           () => addSet(date, ex), () => removeSet(date, ex));
       })),
-    ]));
+    ]),
+    done.length ? h('button', {
+      type: 'button', class: 'btn danger block delete-training',
+      onclick: () => {
+        const sets = done.reduce((a, e) => a + e.sets.length, 0);
+        if (!confirm(`Komplettes Krafttraining von ${date === logicalToday() ? 'heute' : formatDateShort(date)} löschen (${done.length} Übungen, ${sets} Sätze)?`)) return;
+        updateDay(date, (d) => { delete d.strength; d.training = (d.training || []).filter((x) => x.id !== 'strength'); });
+        todayUi.lastExercise = null;
+        softRender();
+      },
+    }, 'Krafttraining dieses Tages löschen') : null);
 }
 
 function trainingBlock(date, day) {
@@ -1973,9 +2008,10 @@ function changeFood(date, kind, item, delta) {
 }
 
 /** Wie oft jedes Lebensmittel / Rezept in den gespeicherten Tagen vorkommt – für die Reihenfolge. */
-function foodUsage() {
+function foodUsage(before) {
   const use = {};
   for (const d of cachedDates('days')) {
+    if (before && d >= before) continue;   // der aktuelle Tag zählt nicht – sonst springen die Chips beim Antippen
     const day = getDay(d) || {};
     for (const [id, n] of Object.entries(day.foods || {})) use[`f:${id}`] = (use[`f:${id}`] || 0) + n;
     for (const [id, n] of Object.entries(day.recipes || {})) use[`r:${id}`] = (use[`r:${id}`] || 0) + n;
@@ -1996,7 +2032,7 @@ function foodChip(label, sub, n, onAdd, onRemove) {
 function foodBlock(date, day) {
   const sum = nutritionOf(day);
   const t = config.targets.daily;
-  const use = foodUsage();
+  const use = foodUsage(date);
   const byUse = (kind) => (a, b) => (use[`${kind}:${b.id}`] || 0) - (use[`${kind}:${a.id}`] || 0);
 
   // Tagessumme gegen Ziele (Carbs = Obergrenze)
@@ -2035,10 +2071,44 @@ function foodBlock(date, day) {
     ];
   };
 
-  // Freier Eintrag (nur Nährwerte)
-  const f = Object.fromEntries(MACROS.map((k) => [k, h('input', { type: 'text', inputmode: 'decimal', placeholder: { kcal: 'kcal', protein: 'Protein g', fat: 'Fett g', carbs: 'Carbs g' }[k] })]));
+  // Freier Eintrag (nur Nährwerte). kcal und Nährwerte werden aufeinander abgestimmt:
+  // 1 g Protein = 4 kcal, 1 g Carbs = 4 kcal, 1 g Fett = 9 kcal.
+  const LABEL = { kcal: 'kcal', protein: 'Protein g', fat: 'Fett g', carbs: 'Carbs g' };
+  const f = Object.fromEntries(MACROS.map((k) => [k, h('input', { type: 'text', inputmode: 'decimal', placeholder: LABEL[k], oninput: () => check() })]));
+  const status = h('p', { class: 'macro-check' });
+  const resolve = () => {
+    const v = Object.fromEntries(MACROS.map((k) => [k, parseNum(f[k].value)]));
+    const fromMacros = 4 * (v.protein || 0) + 4 * (v.carbs || 0) + 9 * (v.fat || 0);
+    const missing = ['protein', 'fat', 'carbs'].filter((k) => v[k] == null);
+    const out = { ...v, fill: null, mismatch: null };
+    if (v.kcal == null && missing.length < 3) { out.kcal = Math.round(fromMacros); out.fill = 'kcal'; }
+    else if (v.kcal != null && missing.length === 1) {
+      const k = missing[0], rest = v.kcal - fromMacros;
+      if (rest < -Math.max(30, v.kcal * 0.1)) out.mismatch = Math.round(fromMacros);   // die anderen Werte ergeben schon mehr kcal
+      else { out[k] = Math.max(0, Math.round(rest / (k === 'fat' ? 9 : 4))); out.fill = k; }
+    } else if (v.kcal != null && missing.length === 0 && Math.abs(v.kcal - fromMacros) > Math.max(30, v.kcal * 0.1)) {
+      out.mismatch = Math.round(fromMacros);
+    }
+    for (const k of MACROS) if (out[k] == null) out[k] = 0;
+    return out;
+  };
+  const check = () => {
+    const r = resolve();
+    for (const k of MACROS) f[k].placeholder = r.fill === k ? `≈ ${fmtNum(r[k])} ${k === 'kcal' ? 'kcal' : 'g'}` : LABEL[k];
+    status.replaceChildren();
+    status.className = 'macro-check';
+    if (r.mismatch != null) {
+      status.classList.add('bad');
+      status.append(`Passt nicht: Protein, Fett und Carbs ergeben ${fmtNum(r.mismatch)} kcal. `,
+        h('button', { type: 'button', class: 'link', onclick: () => { f.kcal.value = String(r.mismatch); check(); } }, `kcal auf ${fmtNum(r.mismatch)} setzen`));
+    } else if (r.fill) {
+      status.append(`Wird ergänzt: ${r.fill === 'kcal' ? `${fmtNum(r.kcal)} kcal` : `${fmtNum(r[r.fill])} g ${LABEL[r.fill].replace(' g', '')}`} (1 g Protein/Carbs = 4 kcal, Fett = 9 kcal)`);
+    } else status.append('1 g Protein oder Carbs = 4 kcal, 1 g Fett = 9 kcal. Ein fehlendes Feld rechnet die App aus.');
+  };
   const submitFree = () => {
-    const entry = Object.fromEntries(MACROS.map((k) => [k, parseNum(f[k].value) || 0]));
+    const r = resolve();
+    if (r.mismatch != null) { check(); return; }
+    const entry = Object.fromEntries(MACROS.map((k) => [k, Math.round(r[k] || 0)]));
     if (!MACROS.some((k) => entry[k])) { f.kcal.focus(); return; }
     todayUi.foodOpen = false;
     if (document.activeElement) document.activeElement.blur();
@@ -2077,6 +2147,7 @@ function foodBlock(date, day) {
     todayUi.foodOpen
       ? h('div', { class: 'food-form' },
         h('div', { class: 'food-macros four' }, MACROS.map((k) => f[k])),
+        (setTimeout(check, 0), status),
         h('div', { class: 'btn-row' },
           h('button', { type: 'button', class: 'btn', onclick: () => { todayUi.foodOpen = false; softRender(); } }, 'Abbrechen'),
           h('button', { type: 'button', class: 'btn primary', onclick: submitFree }, 'Hinzufügen')))
