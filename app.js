@@ -2491,33 +2491,39 @@ function nutritionRate(dates) {
  * Negative mit Wochenlimit zählen voll, solange das Limit eingehalten wird.
  */
 function weekScore(dates) {
-  if (!countedDates(dates).length) return null;
-  const parts = { koerper: [], treibstoff: [], geist: [] };   // [wert 0–1, gewicht]
-  for (const g of trainingGoals(dates)) parts.koerper.push([g.rate, 2]);
+  const counted = countedDates(dates).length;
+  if (!counted) return null;
+  // Jedes Ziel ist ein Baustein: [Erfüllung 0–1, Gewicht, Name, Ist-Text]
+  const parts = { koerper: [], treibstoff: [], geist: [] };
+  for (const g of trainingGoals(dates)) parts.koerper.push([g.rate, 2, g.t.name, `${fmtNum(g.ist)} / ${fmtNum(g.soll)}${g.unit}`]);
   const sets = setsByGroup(dates);
-  for (const [g] of Object.entries(MUSCLE_GROUPS)) {
+  for (const [g, label] of Object.entries(MUSCLE_GROUPS)) {
     const target = config.targets.weekly[`sets_${g}`];
-    if (target) parts.koerper.push([Math.min(1, (sets[g] || 0) / (target * dates.length / 7)), 1]);
+    if (!target) continue;
+    const soll = Math.round(target * dates.length / 7);
+    parts.koerper.push([Math.min(1, (sets[g] || 0) / soll), 1, `${label}-Sätze`, `${sets[g] || 0} / ${soll}`]);
   }
   for (const hb of config.habits.filter(isActive)) {
     const r = habitRate(hb, dates);
-    if (r != null) parts[habitAttr(hb)].push([r, (hb.prio || 1) === 1 ? 2 : 1]);
+    if (r != null) parts[habitAttr(hb)].push([r, (hb.prio || 1) === 1 ? 2 : 1, hb.name, `${Math.round(r * counted)} / ${counted} Tage`]);
   }
   for (const c of config.counters.filter(isActive)) {
     const max = counterMax(c);
     if (max == null) continue;
+    const limit = Math.round(max * dates.length / 7);
     const ist = counterSum(c, dates);
-    parts[habitAttr(c)].push([ist <= max ? 1 : Math.max(0, max / ist), 1]);
+    parts[habitAttr(c)].push([ist <= limit ? 1 : Math.max(0, limit / ist), 1, `${c.name} (Limit)`, `${ist} / max. ${limit}×`]);
   }
   const n = nutritionRate(dates);
-  if (n != null) parts.treibstoff.push([n, 2]);
-  const attrs = {};
+  if (n != null) parts.treibstoff.push([n, 2, 'Ernährungsziele', `${Math.round(n * 100)} % erfüllt`]);
+  const attrs = {}, items = {};
   for (const [k, list] of Object.entries(parts)) {
     const w = list.reduce((a, [, x]) => a + x, 0);
     attrs[k] = w ? Math.round((list.reduce((a, [v, x]) => a + v * x, 0) / w) * 100) : null;
+    items[k] = list.map(([v, , label, text]) => ({ label, text, pct: Math.round(v * 100) }));
   }
   const vals = Object.values(attrs).filter((v) => v != null);
-  return { score: vals.length ? Math.round(avg(vals)) : 0, attrs };
+  return { score: vals.length ? Math.round(avg(vals)) : 0, attrs, items };
 }
 
 /** Level aus allen abgeschlossenen Wochen: Level L braucht 50·L·(L−1) Punkte (100, 300, 600, …). */
@@ -2535,10 +2541,15 @@ function levelInfo() {
   return { level, xp, prev: 50 * level * (level - 1), next: 50 * (level + 1) * level, weeks };
 }
 
+/** Titel je Level – damit die Zahl etwas bedeutet. */
+const LEVEL_TITLES = ['Einsteiger', 'Dranbleiber', 'Gewohnheitstier', 'Routinier', 'Durchzieher', 'Profi', 'Meister', 'Vorbild', 'Legende'];
+const levelTitle = (l) => LEVEL_TITLES[Math.min(l, LEVEL_TITLES.length) - 1];
+const ATTR_HINTS = { koerper: 'Training, Sätze, Bewegung', treibstoff: 'Ernährung, Supplements, Süßes', geist: 'Meditation, Lesen, Handy, Stress' };
+
 // ---------- Auswertung: Zeitraum ----------
 
 const PERIODS = { week: 'Woche', month: 'Monat', quarter: '3 Monate' };
-const statsUi = { kind: LS.get('la.ui.period', 'week'), offset: 0, night: null };
+const statsUi = { kind: LS.get('la.ui.period', 'week'), offset: 0, night: null, attrOpen: null, exOpen: null };
 const rangeDates = (s, e) => { const out = []; for (let d = s; d <= e; d = addDays(d, 1)) out.push(d); return out; };
 
 /** Zeitraum mit Versatz (0 = aktuell): Woche Mo–So, Monat, 3 Kalendermonate. */
@@ -2768,19 +2779,41 @@ function viewWeek() {
   const ws = scores.length ? {
     score: Math.round(avg(scores.map((x) => x.score))),
     attrs: Object.fromEntries(Object.keys(ATTRS).map((k) => { const v = scores.map((x) => x.attrs[k]).filter((x) => x != null); return [k, v.length ? Math.round(avg(v)) : null]; })),
+    items: scores[scores.length - 1].items,
   } : null;
+  // Verlauf: Scores der letzten 8 Wochen (bis zur angezeigten)
+  const recentWeeks = Array.from({ length: 8 }, (_, i) => addDays(mondayOf(p.end < today ? p.end : today), -7 * (7 - i)));
+  const recent = recentWeeks.map((w) => ({ w, s: weekScore(weekDates(w)) }));
+  const missing = lvl.next - lvl.prev - (lvl.xp - lvl.prev);
+  const openAttr = statsUi.attrOpen;
   const levelCard = h('div', { class: 'level-card' },
-    h('div', { class: 'level-top' },
-      h('div', {}, h('div', { class: 'level-num' }, `Level ${lvl.level}`),
-        h('div', { class: 'small muted' }, `${fmtNum(lvl.xp - lvl.prev)} / ${fmtNum(lvl.next - lvl.prev)} Punkte bis Level ${lvl.level + 1}`)),
-      h('div', { class: 'level-score' }, h('b', {}, ws ? `${ws.score} %` : '–'), h('span', {}, kind === 'week' ? (statsUi.offset ? 'Wochen-Score' : 'diese Woche') : 'Ø Wochen-Score'))),
-    h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(((lvl.xp - lvl.prev) / (lvl.next - lvl.prev)) * 100)}%` })),
-    h('div', { class: 'attrs' }, Object.entries(ATTRS).map(([k, label]) => {
+    h('div', { class: 'score-head' },
+      h('div', {},
+        h('span', { class: 'small muted' }, kind === 'week' ? (statsUi.offset ? 'Wochen-Score' : 'Diese Woche') : `Ø Wochen-Score · ${PERIODS[kind]}`),
+        h('div', { class: 'score-big' }, ws ? `${ws.score} %` : '–'),
+        h('span', { class: 'small muted' }, 'So viel deiner Ziele hast du erreicht.'),
+        kind === 'week' && !statsUi.offset && recent[6] && recent[6].s ? h('div', { class: 'small' }, `Letzte Woche: `, h('b', {}, `${recent[6].s.score} %`)) : null),
+      h('div', { class: 'score-weeks', 'aria-label': 'Wochen-Scores der letzten 8 Wochen' }, recent.map(({ w, s }) => h('div', { class: `wk${w === mondayOf(today) ? ' now' : ''}` },
+        h('i', { style: `height:${s ? Math.max(4, s.score) : 0}%` }), h('span', {}, `${isoWeek(w)}`))))),
+    h('div', { class: 'attr-cards' }, Object.entries(ATTRS).map(([k, label]) => {
       const v = ws && ws.attrs[k];
-      return h('div', { class: 'attr' },
-        h('div', { class: 'goal-top' }, h('span', {}, label), h('span', {}, v != null ? `${v} %` : '–')),
-        h('div', { class: 'bar thin' }, h('i', { style: `width:${v || 0}%` })));
-    })));
+      return h('button', { type: 'button', class: `attr-card${openAttr === k ? ' on' : ''}`, onclick: () => { statsUi.attrOpen = openAttr === k ? null : k; softRender(); } },
+        h('span', { class: 'attr-name' }, label),
+        h('b', { class: 'attr-pct' }, v != null ? `${v} %` : '–'),
+        h('div', { class: 'bar thin' }, h('i', { style: `width:${v || 0}%` })),
+        h('small', {}, ATTR_HINTS[k]));
+    })),
+    openAttr && ws && ws.items[openAttr] ? h('div', { class: 'attr-detail' },
+      h('p', { class: 'small muted' }, `${ATTRS[openAttr]} setzt sich zusammen aus (schwächstes zuerst):`),
+      ws.items[openAttr].length ? ws.items[openAttr].slice().sort((a, b) => a.pct - b.pct).map((it) => goalRow(it.label, it.text, it.pct / 100))
+        : h('p', { class: 'hint' }, 'Dafür sind noch keine Ziele gesetzt.')) : h('p', { class: 'hint tap-hint' }, 'Tippe auf Körper, Treibstoff oder Geist, um zu sehen, was zählt.'),
+    h('div', { class: 'level-row' },
+      h('div', { class: 'level-badge' }, h('b', {}, lvl.level), h('span', {}, 'Level')),
+      h('div', { class: 'level-info' },
+        h('b', {}, levelTitle(lvl.level)),
+        h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(((lvl.xp - lvl.prev) / (lvl.next - lvl.prev)) * 100)}%` })),
+        h('small', {}, `Noch ${fmtNum(missing)} Punkte bis Level ${lvl.level + 1} (${levelTitle(lvl.level + 1)}) – etwa ${Math.max(1, Math.ceil(missing / 75))} gute Woche${Math.ceil(missing / 75) > 1 ? 'n' : ''}.`))),
+    h('p', { class: 'hint' }, 'Jede abgeschlossene Woche bringt so viele Punkte wie ihr Score (max. 100). Pause-Tage zählen nicht, nichts geht verloren.'));
 
   // Soll / Ist
   const counted = countedDates(dates).length;
@@ -2814,41 +2847,77 @@ function viewWeek() {
     t.sleepH ? goalRow('Schlaf Ø', sleep != null ? `${fmtDuration(sleep)} / ${fmtDuration(t.sleepH * 60)}` : '–', sleep != null ? sleep / (t.sleepH * 60) : 0) : null,
   ].filter(Boolean);
 
-  // Krafttraining: Sätze je Muskelgruppe (Soll/Ist) und Gewichtsverlauf je Übung
+  // Krafttraining: Überblick, Muskelgruppen (Soll/Ist, zuletzt trainiert) und Fortschritt je Übung
   const groupSets = setsByGroup(dates);
+  const strengthDays = countedDates(dates).filter((d) => ((getDay(d) || {}).strength || []).length);
+  const totalSets = Object.values(groupSets).reduce((a, x) => a + x, 0);
+  const allDays = cachedDates('days').filter((d) => d <= today);
+  /** Alle Einheiten einer Übung (neueste zuletzt) mit bestem Satz nach Kraftwert. */
+  const sessionsOf = (ex) => allDays.map((d) => {
+    const e = ((getDay(d) || {}).strength || []).find((x) => x.id === ex.id);
+    if (!e || !e.sets.length) return null;
+    let top = null;
+    e.sets.forEach((w, i) => { const v = e1rm(w, (e.reps || [])[i]); if (v != null && (!top || v > top.v)) top = { v, w, r: (e.reps || [])[i] }; });
+    return { d, e, top };
+  }).filter(Boolean);
+  const lastTrained = (g) => {
+    for (let i = allDays.length - 1; i >= 0; i--) {
+      if (((getDay(allDays[i]) || {}).strength || []).some((x) => (config.exercises.find((y) => y.id === x.id) || {}).group === g)) return allDays[i];
+    }
+    return null;
+  };
+  const daysAgo = (d) => Math.round((parseYmd(today) - parseYmd(d)) / 86400000);
+  const agoText = (d) => { const n = daysAgo(d); return n === 0 ? 'heute' : n === 1 ? 'gestern' : `vor ${n} Tagen`; };
   const setRows = Object.entries(MUSCLE_GROUPS).map(([g, label]) => {
     const target = config.targets.weekly[`sets_${g}`];
     const ist = groupSets[g] || 0;
-    if (!target && !ist) return null;
+    const last = lastTrained(g);
+    if (!target && !ist && !last) return null;
     const soll = target ? Math.round(target * dates.length / 7) : null;
-    return goalRow(label, soll ? `${ist} / ${soll} Sätze` : `${ist} Sätze`, soll ? Math.min(1, ist / soll) : 1, { reached: soll ? ist >= soll : false });
+    return h('div', { class: `goal${soll && ist >= soll ? ' reached' : ''}` },
+      h('div', { class: 'goal-top' }, h('span', {}, label),
+        h('span', {}, `${ist}${soll ? ` / ${soll}` : ''} Sätze`)),
+      soll ? h('div', { class: 'bar' }, h('i', { style: `width:${Math.min(100, Math.round(ist / soll * 100))}%` })) : null,
+      h('div', { class: `goal-sub${last && daysAgo(last) > 7 ? ' late' : ''}` }, last ? `zuletzt ${agoText(last)}` : 'noch nie trainiert'));
   }).filter(Boolean);
-  const curveDates = dates.length >= 84 ? dates : rangeDates(addDays(p.end < today ? p.end : today, -83), p.end < today ? p.end : today);
-  const curves = config.exercises.map((ex) => {
-    // Pro Einheit der beste Satz nach geschätztem Maximum
-    const best = curveDates.map((d) => {
-      const e = ((getDay(d) || {}).strength || []).find((x) => x.id === ex.id);
-      if (!e) return null;
-      let top = null;
-      e.sets.forEach((w, i) => { const v = e1rm(w, (e.reps || [])[i]); if (v != null && (!top || v > top.v)) top = { v, w, r: (e.reps || [])[i] }; });
-      return top;
-    });
-    const vals = best.filter(Boolean);
-    if (!vals.length) return null;
-    return { ex, pts: best.map((b) => (b ? b.v : null)), first: vals[0], last: vals[vals.length - 1], n: vals.length };
-  }).filter(Boolean).sort((a, b) => b.n - a.n);
-  const strengthContent = setRows.length || curves.length ? [
-    setRows.length ? [h('p', { class: 'subhead first' }, 'Sätze pro Muskelgruppe'), setRows] : null,
-    curves.length ? [h('p', { class: 'subhead' }, `Gewichte (schwerster Satz, ${formatDateShort(curveDates[0])} – heute)`),
-      h('div', { class: 'curves' }, curves.map((c) => {
-        const txt = (b) => `${fmtKg(b.w)}${b.r ? `×${b.r}` : ''}`;
-        const changed = Math.round(c.last.v) !== Math.round(c.first.v);
-        return h('div', { class: 'curve' },
-          h('div', {}, h('b', {}, c.ex.name), h('small', {}, `${c.n}× · Max. ca. ${fmtNum(c.last.v)} kg`)),
-          sparkline([c.pts.filter((v) => v != null)]),
-          h('span', { class: c.last.v > c.first.v ? 'up' : '' }, changed ? `${txt(c.first)} → ${txt(c.last)}` : txt(c.last)));
+  // Fortschritt: bester Satz der letzten Einheit gegen die beste Einheit vor ≥ 3 Wochen
+  const exRows = config.exercises.map((ex) => {
+    const ss = sessionsOf(ex);
+    if (!ss.length) return null;
+    const last = ss[ss.length - 1];
+    const ref = ss.filter((x) => daysAgo(x.d) >= daysAgo(last.d) + 21).slice(-3);
+    const refBest = ref.length ? ref.reduce((a, x) => (x.top.v > a.top.v ? x : a)) : null;
+    const pct = refBest ? Math.round((last.top.v / refBest.top.v - 1) * 100) : null;
+    return { ex, ss, last, pct, refBest };
+  }).filter(Boolean).sort((a, b) => (a.last.d < b.last.d ? 1 : -1));
+  const txtSet = (w, r) => `${w == null ? '?' : w === 0 ? 'KG' : `${fmtNum(w, w % 1 ? 1 : 0)} kg`}${r ? ` × ${r}` : ''}`;
+  const strengthContent = setRows.length || exRows.length ? [
+    h('div', { class: 'strength-sum' },
+      h('div', {}, h('b', {}, strengthDays.length), h('span', {}, strengthDays.length === 1 ? 'Einheit' : 'Einheiten')),
+      h('div', {}, h('b', {}, totalSets), h('span', {}, 'Sätze')),
+      h('div', {}, h('b', {}, exRows.filter((x) => x.pct != null && x.pct > 0).length), h('span', {}, 'Übungen stärker'))),
+    setRows.length ? [h('p', { class: 'subhead' }, 'Muskelgruppen'), setRows] : null,
+    exRows.length ? [h('p', { class: 'subhead' }, 'Übungen · zuletzt trainiert zuerst'),
+      h('div', { class: 'curves' }, exRows.map((x) => {
+        const open = statsUi.exOpen === x.ex.id;
+        const trend = x.pct == null ? h('span', { class: 'trend new' }, 'neu')
+          : x.pct > 0 ? h('span', { class: 'trend up' }, `↑ ${x.pct} %`)
+          : x.pct < 0 ? h('span', { class: 'trend down' }, `↓ ${Math.abs(x.pct)} %`)
+          : h('span', { class: 'trend' }, '→ gleich');
+        return h('button', { type: 'button', class: `ex-row${open ? ' open' : ''}`, onclick: () => { statsUi.exOpen = open ? null : x.ex.id; softRender(); } },
+          h('div', { class: 'ex-top' },
+            h('div', {}, h('b', {}, x.ex.name),
+              h('small', {}, `Bester Satz zuletzt: ${txtSet(x.last.top.w, x.last.top.r)} · ${agoText(x.last.d)}`)),
+            trend),
+          open ? [
+            x.ss.length > 1 ? sparkline([x.ss.slice(-12).map((y) => y.top.v)]) : null,
+            x.refBest ? h('p', { class: 'hint' }, `Vergleich: ${txtSet(x.refBest.top.w, x.refBest.top.r)} am ${formatDateShort(x.refBest.d)}`) : null,
+            h('div', { class: 'ex-sessions' }, x.ss.slice(-5).reverse().map((y) => h('div', {},
+              h('span', {}, formatDateShort(y.d)),
+              h('span', {}, y.e.sets.map((w, i) => txtSet(w, (y.e.reps || [])[i])).join(' · '))))),
+          ] : null);
       })),
-      h('p', { class: 'hint' }, 'Kurve = geschätztes Maximum aus Gewicht und Wiederholungen. So zählen auch mehr Wiederholungen bei gleichem Gewicht als Fortschritt.')] : null,
+      h('p', { class: 'hint' }, '↑ / ↓ vergleicht deinen besten Satz der letzten Einheit mit dem vor mindestens 3 Wochen – mehr Gewicht oder mehr Wiederholungen zählen beide als „stärker“. Tippe auf eine Übung für die letzten Einheiten.')] : null,
   ] : null;
 
   // Was hilft mir? – mindestens 8 Wochen Daten, sonst der gewählte Zeitraum

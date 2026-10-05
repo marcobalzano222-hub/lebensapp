@@ -594,3 +594,49 @@ input[type=search] { width: 100%; min-height: 44px; padding: 8px 12px; border-ra
 .set-pills .pill { font-size: 12px; font-variant-numeric: tabular-nums; background: var(--accent-soft); border-radius: 6px; padding: 3px 7px; border: 0; color: var(--text); min-height: 26px; }
 .delete-training { margin-top: 16px; font-size: 14px; min-height: 42px; }
 .composer .link { align-self: flex-start; }
+
+/* Fortschritt / Level – verständlicher */
+.score-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-end; }
+.score-big { font-size: 34px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.1; margin: 2px 0; }
+.score-weeks { display: flex; gap: 4px; align-items: flex-end; height: 64px; }
+.score-weeks .wk { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; width: 14px; }
+.score-weeks .wk i { display: block; width: 10px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 45%, var(--surface-2)); }
+.score-weeks .wk.now i { background: var(--accent); }
+.score-weeks .wk span { font-size: 8px; color: var(--muted); margin-top: 2px; }
+.attr-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.attr-card { text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 8px; }
+.attr-card.on { border-color: var(--accent); }
+.attr-card .goal-top { font-size: 13px; margin-bottom: 5px; }
+.attr-card small { display: block; font-size: 10.5px; color: var(--muted); margin-top: 5px; line-height: 1.3; }
+.attr-detail { margin-top: 10px; }
+.tap-hint { margin-top: 8px; }
+.level-row { display: flex; gap: 12px; align-items: center; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.level-badge { width: 52px; height: 52px; min-width: 52px; border-radius: 50%; background: var(--accent); color: var(--on-accent); display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1; }
+.level-badge b { font-size: 20px; }
+.level-badge span { font-size: 9px; text-transform: uppercase; letter-spacing: .05em; }
+.level-info { flex: 1; min-width: 0; }
+.level-info .bar { margin: 5px 0; }
+.level-info small { font-size: 12px; color: var(--muted); }
+
+/* Krafttraining-Auswertung */
+.strength-sum { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 4px 0 6px; }
+.strength-sum > div { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; }
+.strength-sum b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+.strength-sum span { font-size: 12px; color: var(--muted); }
+.goal-sub.late { color: var(--pending); }
+.ex-row { display: block; width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.ex-row.open { border-color: var(--accent); }
+.ex-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.ex-top b { display: block; font-size: 14px; }
+.ex-top small { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.trend { font-size: 13px; font-weight: 650; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.trend.up { color: var(--accent); }
+.trend.down { color: var(--danger); }
+.trend.new { font-weight: 500; }
+.ex-row svg { display: block; width: 100%; height: 32px; margin-top: 8px; }
+.ex-row svg path { fill: none; stroke: var(--accent); stroke-width: 1.6; }
+.ex-sessions { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; font-size: 12px; }
+.ex-sessions > div { display: flex; gap: 10px; }
+.ex-sessions > div span:first-child { color: var(--muted); min-width: 42px; }
+.attr-name { display: block; font-size: 12px; color: var(--muted); }
+.attr-pct { display: block; font-size: 20px; font-variant-numeric: tabular-nums; margin: 1px 0 5px; }
