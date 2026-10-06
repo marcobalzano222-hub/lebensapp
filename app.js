@@ -2858,7 +2858,7 @@ function viewWeek() {
     if (!e || !e.sets.length) return null;
     let top = null;
     e.sets.forEach((w, i) => { const v = e1rm(w, (e.reps || [])[i]); if (v != null && (!top || v > top.v)) top = { v, w, r: (e.reps || [])[i] }; });
-    return { d, e, top };
+    return top ? { d, e, top } : null;   // Einheiten ohne bekanntes Gewicht überspringen
   }).filter(Boolean);
   const lastTrained = (g) => {
     for (let i = allDays.length - 1; i >= 0; i--) {
@@ -3575,7 +3575,16 @@ function render() {
   document.body.classList.remove('no-tabs');
   for (const b of document.querySelectorAll('#tabbar button')) b.classList.toggle('active', b.dataset.tab === ui.tab);
   if (!views[ui.tab]) ui.tab = 'today';
-  view.replaceChildren(views[ui.tab]());
+  try {
+    view.replaceChildren(views[ui.tab]());
+  } catch (e) {
+    // Ein Fehler in einer Ansicht darf die App nicht lahmlegen
+    console.error(e);
+    view.replaceChildren(h('div', {},
+      h('h1', {}, 'Ups'),
+      h('p', { class: 'warn' }, 'In dieser Ansicht ist ein Fehler aufgetreten. Deine Daten sind sicher – die anderen Reiter funktionieren weiter.'),
+      h('p', { class: 'hint' }, `Technisch: ${e.message}`)));
+  }
 }
 
 /** Neu zeichnen, außer der Nutzer tippt gerade in ein Feld. */
