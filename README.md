@@ -62,6 +62,8 @@ Ein iOS-Kurzbefehl kann täglich Schritte, Schlaf, Gewicht und Workouts aus Appl
 - **Ernährung:** Lebensmittel-Chips mit kleinster sinnvoller Einheit (1 Ei, 25 g Nudeln roh …) – Tap = +1, langer Druck = −1. Oben die Tagessumme kcal · Protein · Fett · Carbs (Carbs als Obergrenze). Rezepte stellst du im Setup aus Chips zusammen. Süßes und Alkohol zählen automatisch bei den Negatives mit.
 - **Krafttraining:** Kachel „Kraft“ → Pull / Push / Alle → Übung antippen = 1 Satz mit dem zuletzt verwendeten Gewicht. Mit −/+ korrigierst du das Gewicht des letzten Satzes; weitere Sätze übernehmen es. Langer Druck = Satz zurück. Die Auswertung zeigt Sätze pro Muskelgruppe (mit Wochenziel, z. B. Beine ≥ 5) und den Gewichtsverlauf je Übung.
 - **Negatives** (z. B. Süßes, Alkohol, Stress): Tap = +1, „−“ bzw. langer Druck = −1. Optional mit Wochenlimit im Setup.
+- **Tags** (z. B. Koffeinverzicht, Durchfall): pro Tag antippen, neue mit „+ Neu“. „Was hilft mir?“ vergleicht Tage mit und ohne Tag.
+- **Notiz zum Befinden:** unter Körper und Geist „+ Notiz“ für freien Text, nur wenn es etwas gibt.
 - **Pause** (z. B. krank, Reise): Der Tag zählt nicht in Durchschnitte und Wochenziele. Eingaben bleiben möglich.
 - **Sync-Punkt oben rechts:** grün = synchron, gelb = ausstehend/offline, rot = Fehler (Details unter Setup → Sync & Daten; ein Tap auf den Punkt führt direkt dorthin).
 
@@ -84,6 +86,7 @@ lebensapp-data-<name>/
 - `refersTo: "previousDay"` (z. B. „Kein Handy vorm Schlafen“) wird am nächsten Tag eingegeben, aber in der Datei des Vortags gespeichert.
 - Krafttraining: `strength` = Liste `{ id, sets: [kg, …], reps: [n, …] }` (ein Eintrag pro Satz; `null` = Gewicht noch unbekannt, `0` = Körpergewicht). Wiederholungen werden wie das Gewicht vom letzten Mal vorbelegt.
 - Ernährung: `foods` und `recipes` (Anzahl Einheiten je ID) plus `foodSnap` mit den Nährwerten je Einheit zum Zeitpunkt der Eingabe, damit spätere Änderungen die Historie nicht verfälschen. Ältere Einträge (`meals`, `mealsSnapshot`, `food`) werden weiter mitgezählt.
+- `tags` = Liste von Tag-IDs (Namen in `config.dayTags`), `notes` = `{ body: "…", mind: "…" }` (Notiz je Befindens-Skala).
 - Deaktivieren im Setup löscht nichts (`active: false`); IDs bleiben beim Umbenennen stabil.
 
 **CSV-Export** (Long-Format): `date, source, category, key, value, pause`. `source` ist `app` oder `health`; Health liefert zusätzlich `metric`-Zeilen für `steps`, `sleep_min` und `weight` sowie `training`-Zeilen pro Workout (nicht zugeordnete Typen als `unmapped:<Typ>`).

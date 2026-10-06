@@ -171,6 +171,7 @@ function normalizeConfig(c) {
   if (!Array.isArray(cfg.foods)) cfg.foods = clone(DEFAULT_FOODS);
   if (!Array.isArray(cfg.exercises)) cfg.exercises = clone(DEFAULT_EXERCISES);
   if (!Array.isArray(cfg.noteTags)) cfg.noteTags = [...DEFAULT_NOTE_TAGS];
+  if (!Array.isArray(cfg.dayTags)) cfg.dayTags = DEFAULT_DAY_TAGS.map((t) => ({ ...t }));
   cfg.health = Object.assign({ workoutMap: {} }, cfg.health);
   if (!cfg.health.workoutMap || typeof cfg.health.workoutMap !== 'object') cfg.health.workoutMap = {};
   return cfg;
@@ -1319,6 +1320,13 @@ function viewSetup() {
 
     ]),
 
+    setupGroup('daytags', 'Tages-Tags', `${c.dayTags.filter(isActive).length} Tags`, [
+      h('p', { class: 'hint' }, 'Markierungen für besondere Tage. Neue Tags legst du direkt im Reiter Heute an; hier umbenennen oder ausblenden.'),
+      h('div', { class: 'rows' }, c.dayTags.map((t) => h('div', { class: `row${isActive(t) ? '' : ' inactive'}` }, h('div', { class: 'row-main' },
+        textEl(t.name, (v) => { if (v.trim()) { t.name = v.trim(); commitConfig('dayTags'); } }, { 'aria-label': 'Tag' }),
+        h('button', { type: 'button', class: `toggle${isActive(t) ? ' on' : ''}`, onclick: () => { t.active = !isActive(t); commitConfig('dayTags', true); } }, isActive(t) ? 'Aktiv' : 'Aus'))))),
+    ]),
+
     setupGroup('negatives', 'Negatives', `${c.counters.filter(isActive).length} Zähler`, [
       h('p', { class: 'hint' }, 'Zähler für Dinge, die du reduzieren willst. Im Reiter Heute: Tap = +1. Ein Wochenlimit erscheint in der Auswertung unter Soll/Ist.'),
       h('div', { class: 'rows' }, counterRows),
@@ -1387,7 +1395,7 @@ function viewSetup() {
 
 // ---------- Heute ----------
 
-const todayUi = { date: null, pauseOpen: false, trainOpen: null, trainAuto: null, strengthDay: null, lastExercise: null, foodOpen: false, moreCats: new Set(), ensured: null };
+const todayUi = { noteOpen: null, tagOpen: false, date: null, pauseOpen: false, trainOpen: null, trainAuto: null, strengthDay: null, lastExercise: null, foodOpen: false, moreCats: new Set(), ensured: null };
 
 const byPrio = (list) => list.map((x, i) => [x, i]).sort((a, b) => (a[0].prio || 1) - (b[0].prio || 1) || a[1] - b[1]).map((x) => x[0]);
 const habitDate = (hb, date) => (hb.refersTo === 'previousDay' ? addDays(date, -1) : date);
@@ -1506,13 +1514,84 @@ function boolTile(hb, date, slot, compact) {
 
 function scaleRow(m, date) {
   const v = metricValue(m, date);
+  const note = (((getDay(date) || {}).notes || {})[m.id]) || '';
+  const key = `${date}:${m.id}`;
+  const open = note || todayUi.noteOpen === key;
+  let area = null;
+  if (open) {
+    area = h('textarea', {
+      class: 'day-note', rows: 1, placeholder: `Was fällt dir zu „${m.name}“ heute auf? (optional)`,
+      oninput: (e) => autoGrow(e.target),
+      onchange: (e) => {
+        const t = e.target.value.trim();
+        updateDay(date, (d) => { const n = { ...(d.notes || {}) }; if (t) n[m.id] = t; else delete n[m.id]; d.notes = n; if (!Object.keys(n).length) delete d.notes; });
+        if (!t) { todayUi.noteOpen = null; softRender(); }
+      },
+    });
+    area.value = note;
+    setTimeout(() => { autoGrow(area); if (!note && todayUi.noteOpen === key && document.body.contains(area)) area.focus(); }, 30);
+  }
   return h('div', { class: 'block' },
-    h('p', { class: 'block-title' }, h('span', {}, m.name)),
+    h('p', { class: 'block-title' }, h('span', {}, m.name),
+      !open ? h('button', { type: 'button', class: 'link', onclick: () => { todayUi.noteOpen = key; softRender(); } }, '+ Notiz') : null),
     h('div', { class: 'scale', role: 'group', 'aria-label': m.name },
       Array.from({ length: 10 }, (_, i) => i + 1).map((n) => h('button', {
         type: 'button', class: v === n ? 'on' : '', 'aria-pressed': v === n ? 'true' : 'false',
         onclick: () => { haptic(); setMetric(m, date, v === n ? null : n); softRender(); },
-      }, n))));
+      }, n))),
+    area);
+}
+
+// ---------- Tages-Tags ----------
+// Freie Markierungen pro Tag (z. B. Koffeinverzicht, Durchfall). day.tags = [id, …]
+
+const DEFAULT_DAY_TAGS = [
+  { id: 'caffeine_free', name: 'Koffeinverzicht', active: true },
+  { id: 'diarrhea', name: 'Durchfall', active: true },
+  { id: 'headache', name: 'Kopfschmerzen', active: true },
+  { id: 'cold', name: 'Erkältung', active: true },
+];
+
+function toggleDayTag(date, id) {
+  haptic();
+  updateDay(date, (d) => {
+    const tags = new Set(d.tags || []);
+    if (tags.has(id)) tags.delete(id); else tags.add(id);
+    d.tags = [...tags];
+    if (!d.tags.length) delete d.tags;
+  });
+  softRender();
+}
+
+function dayTagBlock(date, day) {
+  const use = {};
+  for (const d of cachedDates('days')) if (d < date) for (const id of (getDay(d) || {}).tags || []) use[id] = (use[id] || 0) + 1;
+  const list = config.dayTags.filter(isActive).sort((a, b) => (use[b.id] || 0) - (use[a.id] || 0));
+  const on = new Set(day.tags || []);
+  const input = h('input', { type: 'text', placeholder: 'Neuer Tag, z. B. Sauna spät', enterkeyhint: 'done' });
+  const add = () => {
+    const name = input.value.trim();
+    if (!name) { input.focus(); return; }
+    let tag = config.dayTags.find((t) => t.name.toLowerCase() === name.toLowerCase());
+    if (!tag) {
+      tag = { id: slugId(name, config.dayTags), name, active: true };
+      config.dayTags.push(tag);
+      saveConfig('config: add day tag');
+    } else if (!isActive(tag)) { tag.active = true; saveConfig('config: update day tag'); }
+    todayUi.tagOpen = false;
+    if (document.activeElement) document.activeElement.blur();
+    if (!on.has(tag.id)) toggleDayTag(date, tag.id); else softRender();
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') add(); });
+  return h('div', { class: 'block' },
+    h('div', { class: 'tag-chips' },
+      list.map((t) => h('button', { type: 'button', class: `tag${on.has(t.id) ? ' on' : ''}`, 'aria-pressed': on.has(t.id) ? 'true' : 'false', onclick: () => toggleDayTag(date, t.id) }, t.name)),
+      // Tags, die an diesem Tag gesetzt, aber inzwischen deaktiviert sind
+      [...on].filter((id) => !list.some((t) => t.id === id)).map((id) => h('button', { type: 'button', class: 'tag on', onclick: () => toggleDayTag(date, id) }, (config.dayTags.find((t) => t.id === id) || { name: id }).name)),
+      !todayUi.tagOpen ? h('button', { type: 'button', class: 'tag add', onclick: () => { todayUi.tagOpen = true; softRender(); setTimeout(() => { const i = document.querySelector('.tag-new input'); if (i) i.focus(); }, 30); } }, '+ Neu') : null),
+    todayUi.tagOpen ? h('div', { class: 'add-row tag-new' }, input,
+      h('button', { type: 'button', class: 'btn', onclick: add }, 'Hinzufügen')) : null,
+    h('p', { class: 'hint' }, 'Für alles Besondere an diesem Tag. „Was hilft mir?“ vergleicht Tage mit und ohne Tag.'));
 }
 
 /** Zahlenfeld mit −/+ Stepper. */
@@ -2361,6 +2440,7 @@ function viewToday() {
       section('training', 'Training', { text: trainingSum }, trainingBlock(date, day)),
       section('mood', 'Befinden', countSum('mood'), moods.map((m) => metricBlock(m, date))),
       section('neg', 'Negatives', { text: (() => { const n = Object.values(day.counters || {}).reduce((a, x) => a + x, 0); return n ? `${n}×` : 'keine'; })() }, counterBlock(date, day)),
+      section('tags', 'Tags', { text: (day.tags || []).map((id) => (config.dayTags.find((t) => t.id === id) || { name: id }).name).join(', ') || '–' }, dayTagBlock(date, day)),
       date === logicalToday() ? noteReminder(date) : null,
       !habits.length && !metrics.length ? h('p', { class: 'empty-note' }, 'Noch nichts eingerichtet – siehe Setup.') : null,
     ));
@@ -2703,6 +2783,7 @@ function insights(dates) {
     ...config.habits.filter(isActive).map((hb) => ({ label: hb.name, test: (d) => { const day = getDay(d); return day ? ((day.habits || {})[hb.id] === true) : null; } })),
     ...config.counters.filter(isActive).map((c) => ({ label: c.name, negative: true, test: (d) => { const day = getDay(d); return day ? (((day.counters || {})[c.id] || 0) > 0) : null; } })),
     { label: 'Training', test: (d) => (getDay(d) || getHealth(d) ? trainingFor(d).length > 0 : null) },
+    ...config.dayTags.filter(isActive).map((t) => ({ label: t.name, test: (d) => { const day = getDay(d); return day ? (day.tags || []).includes(t.id) : null; } })),
     { label: 'Beintraining', test: (d) => { const day = getDay(d); if (!day) return null; return (day.strength || []).some((e) => (config.exercises.find((x) => x.id === e.id) || {}).group === 'legs'); } },
   ];
   // Viele Carbs (über dem Median der Tage mit Ernährungseinträgen)
@@ -3372,6 +3453,8 @@ function exportCsv() {
     for (const t of d.training || []) add('training', t.id, t.min ?? '');
     for (const m of d.meals || []) add('meal', m.id, m.count);
     for (const [k, v] of Object.entries(d.counters || {})) add('counter', k, v);
+    for (const id of d.tags || []) add('tag', id, 1);
+    for (const [k, v] of Object.entries(d.notes || {})) add('note', k, v);
     for (const [k, v] of Object.entries(d.foods || {})) add('food', k, v);
     for (const [k, v] of Object.entries(d.recipes || {})) add('recipe', k, v);
     for (const e of d.strength || []) add('strength', e.id, e.sets.map((w, i) => `${w ?? ''}x${(e.reps || [])[i] ?? ''}`).join(';'));
@@ -3411,6 +3494,8 @@ function exportForClaude(weeks = 8) {
   for (const m of metrics) cols.push(...(m.type === 'bloodpressure' ? [`${m.id}_sys`, `${m.id}_dia`] : [m.id]));
   const counters = config.counters.filter(isActive);
   cols.push(...counters.map((c) => c.id));
+  const moods = metrics.filter((m) => m.type === 'scale10');
+  cols.push('tags', ...moods.map((m) => `note_${m.id}`));
   cols.push('kcal', 'protein', 'fat', 'carbs', 'foods', 'strength', ...training.map((t) => `${t.id}${t.type === 'minutes' ? '_min' : ''}`),
     'steps', 'sleep_min', 'deep_min', 'rem_min', 'resting_hr', 'hrv_ms');
   const rows = [cols.join(',')];
@@ -3426,6 +3511,9 @@ function exportForClaude(weeks = 8) {
       if (m.type === 'bloodpressure') r.push(v ? v.sys : '', v ? v.dia : ''); else r.push(v ?? '');
     }
     r.push(...counters.map((c) => (getDay(d) ? ((day.counters || {})[c.id] || 0) : '')));
+    const q = (t) => (t ? `"${String(t).replace(/"/g, "'").replace(/\s*\n\s*/g, ' / ')}"` : '');
+    r.push(q((day.tags || []).map((id) => (config.dayTags.find((t) => t.id === id) || { name: id }).name).join('; ')),
+      ...moods.map((m) => q((day.notes || {})[m.id])));
     const foods = [...Object.entries(day.recipes || {}).map(([id, k]) => `${(config.recipes.find((x) => x.id === id) || { name: id }).name} ${k}x`),
       ...Object.entries(day.foods || {}).map(([id, k]) => `${(config.foods.find((x) => x.id === id) || { name: id }).name} ${k}x`)].join('; ');
     r.push(n.any ? Math.round(n.kcal) : '', n.any ? Math.round(n.protein) : '', n.any ? Math.round(n.fat) : '', n.any ? Math.round(n.carbs) : '', foods ? `"${foods.replace(/"/g, '')}"` : '',
@@ -3442,6 +3530,7 @@ function exportForClaude(weeks = 8) {
     'steps, sleep_min, deep_min, rem_min, resting_hr, hrv_ms = aus Apple Health (Schlaf = Nacht vor dem Datum)',
     'strength = Krafttraining: Übung mit kg x Wiederholungen je Satz (z. B. Latzug 80x10 80x10 85x8 = 3 Sätze)',
     'kcal, protein, fat, carbs = Tagessumme (g); foods = gegessene Lebensmittel/Rezepte mit Anzahl Einheiten; Ziel: wenig Carbs',
+    'tags = besondere Markierungen des Tages (z. B. Koffeinverzicht, Durchfall); note_<x> = freie Notiz zu Körper/Geist',
     'pause = Pause-Tag (krank, Reise …) – bei Auswertungen ausklammern',
   ];
   const goals = [
