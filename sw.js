@@ -1,6 +1,6 @@
 // Service Worker: App-Shell Cache-First, GitHub-API Network-Only.
 // Bei jedem Release CACHE_VERSION erhöhen, damit Updates ankommen.
-const CACHE_VERSION = 'lebensapp-v24';
+const CACHE_VERSION = 'lebensapp-v25';
 
 const SHELL = [
   './',

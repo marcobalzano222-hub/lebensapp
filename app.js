@@ -480,6 +480,63 @@ function heartValue(v, date) {
 
 const healthCache = new Map();   // path → { sha, parsed }
 
+// ---------- Health-Historie (history/daily.json, einmalig aus dem Health-Export, siehe tools/import_health_export.py) ----------
+// { from, to, days: { "JJJJ-MM-TT": { steps, sleepMin, deepMin, remMin, coreMin, awakeMin, bed, wake, weight,
+//   bpSys, bpDia, hrv, restingHr, exerciseMin, workouts: [[Typ, Minuten]] } } }
+
+const HISTORY_PATH = 'history/daily.json';
+const historyData = () => { const f = Store.get(HISTORY_PATH); return f && f.data && f.data.days ? f.data : null; };
+
+/** Historie neu laden, wenn sie sich im Repo geändert hat. */
+async function ensureHistory() {
+  const remote = (await GH.listDir('history')).find((f) => f.name === 'daily.json');
+  const cached = Store.get(HISTORY_PATH);
+  if (!remote || (cached && cached.sha === remote.sha)) return false;
+  const f = await GH.getFile(HISTORY_PATH);
+  if (!f) return false;
+  Store.put(HISTORY_PATH, f.data, f.sha);
+  healthCache.clear();
+  return true;
+}
+
+/** Tageswerte aus der Historie im Format von getHealth (ohne Schlaf-Zeitstrahl). */
+function historyHealth(date) {
+  const hd = historyData();
+  const x = hd && hd.days[date];
+  if (!x) return null;
+  const at = (hhmm, night) => {
+    const [hh, mm] = String(hhmm).split(':').map(Number);
+    const d = parseYmd(night && hh >= 12 ? addDays(date, -1) : date);
+    d.setHours(hh, mm, 0, 0);
+    return d.getTime();
+  };
+  const n = (v) => (typeof v === 'number' && v > 0 ? v : null);
+  return {
+    date,
+    steps: n(x.steps), weight: n(x.weight), stepSources: null,
+    sleepMin: n(x.sleepMin), deepMin: n(x.deepMin), remMin: n(x.remMin), coreMin: n(x.coreMin), awakeMin: n(x.awakeMin),
+    bedTime: x.bed && x.sleepMin ? at(x.bed, true) : null, wakeTime: x.wake && x.sleepMin ? at(x.wake, false) : null,
+    timeline: null, sleepSource: x.sleepMin ? 'Health-Export' : null,
+    restingHr: n(x.restingHr), hrv: n(x.hrv),
+    bp: n(x.bpSys) && n(x.bpDia) ? { sys: x.bpSys, dia: x.bpDia } : null,
+    exerciseMin: n(x.exerciseMin),
+    sources: [], workouts: (x.workouts || []).map(([type, min]) => ({ type, start: null, min })),
+    fromHistory: true,
+  };
+}
+
+const SLEEP_KEYS = ['sleepMin', 'deepMin', 'remMin', 'coreMin', 'awakeMin', 'bedTime', 'wakeTime', 'sleepSource'];
+
+/** Lücken in den Kurzbefehl-Daten mit der Historie füllen (Schlaf nur als Ganzes). */
+function fillFromHistory(parsed, date) {
+  const hx = historyHealth(date);
+  if (!hx) return parsed;
+  if (parsed.sleepMin == null && hx.sleepMin != null) for (const k of SLEEP_KEYS) parsed[k] = hx[k];
+  for (const k of ['steps', 'weight', 'restingHr', 'hrv', 'bp', 'exerciseMin']) if (parsed[k] == null && hx[k] != null) parsed[k] = hx[k];
+  if (!parsed.workouts.length && hx.workouts.length) parsed.workouts = hx.workouts;
+  return parsed;
+}
+
 /**
  * Rohdaten für einen Tag. Seit Kurzbefehl v6 enthält jede Datei „gestern + heute bis jetzt“;
  * Daten für date stehen daher in health/date.json (vollständig) und health/(date−1).json (Teil des Tages,
@@ -492,7 +549,7 @@ function healthRaw(date) {
   const key = files.map((f) => f.sha).join('+');
   const text = (k) => [...new Set(files.flatMap((f) => (typeof f.data[k] === 'string' ? f.data[k].split(/\r?\n/) : [])).filter((x) => x.trim()))].join('\n');
   const raw = {};
-  for (const k of ['sleep', 'restingHr', 'hrv', 'bpSys', 'bpDia', 'workouts', 'weight']) raw[k] = text(k);
+  for (const k of ['sleep', 'restingHr', 'hrv', 'bpSys', 'bpDia', 'workouts', 'weight', 'exercise']) raw[k] = text(k);
   // Schritte pro Tag (gruppiert): je Tag der größte Wert – ein früherer Lauf kennt nur einen Teil des Tages
   const perDay = {};
   for (const f of files) {
@@ -529,10 +586,17 @@ function healthRaw(date) {
 
 /** Aufbereitete Health-Daten eines Tages oder null. */
 function getHealth(date) {
-  const src = healthRaw(date);
-  if (!src) return null;
+  // Schlüssel zuerst (billig), damit die Rohdaten nur bei Änderungen neu zusammengesetzt werden
+  const files = [healthPath(date), healthPath(addDays(date, -1))].map((p) => Store.get(p)).filter((f) => f && f.data && !f.data.invalid);
+  const key = `${files.map((f) => f.sha).join('+') || '-'}|${(Store.get(HISTORY_PATH) || {}).sha || ''}`;
   const hit = healthCache.get(date);
-  if (hit && hit.key === src.key) return hit.parsed;
+  if (hit && hit.key === key) return hit.parsed;
+  const src = files.length ? healthRaw(date) : null;
+  if (!src) {
+    const hx = historyHealth(date);
+    healthCache.set(date, { key, parsed: hx });
+    return hx;
+  }
   const raw = src.raw;
   const sleep = healthLines(raw.sleep, ['value', 'start', 'end', 'source']);
   const sleepInfo = sleepStats(sleep, date);
@@ -549,7 +613,9 @@ function getHealth(date) {
       .filter((x) => Number.isFinite(x.t) && x.v != null && ymd(new Date(x.t)) === date)
       .sort((a, b) => a.t - b.t);
   };
-  const stepLines = onDate(raw.steps), weightLines = onDate(raw.weight);
+  const stepLines = onDate(raw.steps), weightLines = onDate(raw.weight), exerciseLines = onDate(raw.exercise);
+  // Trainingsminuten (Kurzbefehl v9, pro Tag summiert): spätere Läufe kennen mehr vom Tag → größter Wert
+  const exerciseMin = exerciseLines && exerciseLines.length ? Math.round(Math.max(...exerciseLines.map((x) => x.v))) : null;
   const weight = weightLines ? (weightLines.length ? weightLines[weightLines.length - 1].v : null) : looseNum(raw.weight);
   const dedup = raw.stepsValue ? dedupSteps(raw, date) : null;
   const steps = dedup ? dedup.steps
@@ -571,14 +637,16 @@ function getHealth(date) {
     restingHr: rhr.value,
     bp: bp ? bp.value : null,
     hrv: hrv.value,
+    exerciseMin: exerciseMin > 0 ? exerciseMin : null,
     sources: [...new Set([...(dedup ? Object.keys(dedup.perSource) : []), ...(sleepInfo ? sleepInfo.sources : []), ...rhr.sources, ...hrv.sources, ...(bp ? bp.sources : [])].filter((x) => x && x !== '?'))],
     workouts,
   };
-  if (![parsed.steps, parsed.weight, parsed.sleepMin, parsed.restingHr, parsed.hrv, parsed.bp].some((v) => v != null) && !workouts.length && !src.hasOwn) {
-    healthCache.set(date, { key: src.key, parsed: null });
+  fillFromHistory(parsed, date);
+  if (![parsed.steps, parsed.weight, parsed.sleepMin, parsed.restingHr, parsed.hrv, parsed.bp, parsed.exerciseMin].some((v) => v != null) && !parsed.workouts.length && !src.hasOwn) {
+    healthCache.set(date, { key, parsed: null });
     return null;
   }
-  healthCache.set(date, { key: src.key, parsed });
+  healthCache.set(date, { key, parsed });
   return parsed;
 }
 
@@ -900,6 +968,7 @@ function refreshFromRemote() {
       }
       await refreshIndex();
       try { if (await ensureNotes()) changed = true; } catch { /* Notizen sind optional */ }
+      try { if (await ensureHistory()) changed = true; } catch { /* Historie ist optional */ }
       const today = logicalToday();
       if (await ensureDays(addDays(today, -14), today)) changed = true;
       Sync.offline = false;
@@ -2838,6 +2907,224 @@ function insightRow(x) {
 
 // ---------- Auswertung ----------
 
+// ---------- Lebensbilanz: wenige Kennzahlen über Jahre ----------
+// Gleitend über 30 Tage, verglichen mit den 30 Tagen davor und demselben Zeitraum vor einem Jahr.
+// Grundlage: App-Einträge, Kurzbefehl und die Historie aus dem Health-Export.
+
+const bilanzUi = { open: null };
+const BILANZ_WINDOW = 30;
+
+/** Sparplan: { start, rates: [{ from, perHour }], extras: [{ id, date, eur }] } in config.savings. */
+function savedAt(ms) {
+  const s = config.savings;
+  if (!s) return 0;
+  let eur = 0;
+  const rates = (s.rates || []).filter((r) => r.from && r.perHour > 0).sort((a, b) => (a.from < b.from ? -1 : 1));
+  rates.forEach((r, i) => {
+    const from = Math.max(parseYmd(r.from).setHours(0, 0, 0, 0), s.start ? parseYmd(s.start).setHours(0, 0, 0, 0) : -Infinity);
+    const to = Math.min(ms, i + 1 < rates.length ? parseYmd(rates[i + 1].from).setHours(0, 0, 0, 0) : Infinity);
+    if (to > from) eur += ((to - from) / 3600000) * r.perHour;
+  });
+  for (const x of s.extras || []) if (x.eur && parseYmd(x.date).setHours(0, 0, 0, 0) <= ms) eur += Number(x.eur);
+  return eur;
+}
+const endOfDay = (date) => parseYmd(date).setHours(24, 0, 0, 0);
+const fmtEur = (v) => `${fmtNum(Math.round(v))} €`;
+
+function moodOn(d) {
+  const vals = config.metrics.filter((m) => isActive(m) && m.type === 'scale10').map((m) => metricValue(m, d)).filter((v) => typeof v === 'number');
+  return vals.length ? avg(vals) : null;
+}
+const metricById = (id) => config.metrics.find((m) => m.id === id);
+
+/** Kennzahlen der Lebensbilanz. better: +1 = mehr ist besser, −1 = weniger ist besser. */
+function bilanzDefs() {
+  const w = metricById('weight') || { id: 'weight', type: 'number' };
+  const bp = config.metrics.find((m) => m.type === 'bloodpressure') || { id: 'bp', type: 'bloodpressure' };
+  return [
+    { id: 'move', label: 'Bewegung', better: 1, scale: 7, min: 5, skipToday: true, decimals: 0,
+      day: (d) => (getHealth(d) || {}).exerciseMin ?? null, fmt: (v) => `${fmtNum(v)} min`, unit: 'pro Woche',
+      info: 'Trainingsminuten aus Apple Health (grüner Ring der Watch), hochgerechnet auf eine Woche.' },
+    { id: 'weight', label: 'Gewicht', better: -1, min: 1, decimals: 1,
+      day: (d) => metricOn(w, d) ?? null, fmt: (v) => `${fmtNum(v, 1)} kg`, unit: 'Ø 30 Tage',
+      info: 'Durchschnitt aller Wiegungen der letzten 30 Tage (eigene Einträge und Waage über Health).' },
+    { id: 'bp', label: 'Blutdruck', better: -1, min: 1, decimals: 0,
+      day: (d) => (metricOn(bp, d) || {}).sys ?? null, day2: (d) => (metricOn(bp, d) || {}).dia ?? null,
+      fmt: (v, v2) => `${fmtNum(v)}/${v2 != null ? fmtNum(v2) : '–'}`, unit: 'Ø 30 Tage',
+      info: 'Durchschnitt aller Messungen der letzten 30 Tage. Verglichen wird der obere Wert (systolisch).' },
+    { id: 'sleep', label: 'Schlaf', better: 1, min: 5, decimals: 0,
+      day: (d) => (getHealth(d) || {}).sleepMin ?? null, fmt: (v) => fmtDuration(v), unit: 'Ø pro Nacht',
+      info: 'Geschlafene Zeit pro Nacht (ohne Wachphasen), Quelle wie im Setup festgelegt.' },
+    { id: 'mood', label: 'Befinden', better: 1, min: 3, decimals: 1,
+      day: moodOn, fmt: (v) => `${fmtNum(v, 1)} / 10`, unit: 'Ø Körper & Geist',
+      info: 'Durchschnitt deiner abendlichen Bewertung von Körper und Geist.' },
+  ];
+}
+
+/** Durchschnitt einer Kennzahl über die n Tage bis end (bzw. nur mit genug Messungen). */
+function bilanzAvg(def, end, n = BILANZ_WINDOW) {
+  const dates = rangeDates(addDays(end, -(n - 1)), end);
+  const vals = dates.map(def.day).filter((v) => typeof v === 'number');
+  if (vals.length < Math.min(def.min, n)) return null;
+  const v2 = def.day2 ? avg(dates.map(def.day2).filter((v) => typeof v === 'number')) : null;
+  return { v: avg(vals) * (def.scale || 1), v2, n: vals.length };
+}
+
+/** Monatswerte seit Beginn der Daten (höchstens 7 Jahre). */
+function bilanzMonths(def, today) {
+  const hd = historyData();
+  const first = [hd && hd.from, cachedDates('days')[0]].filter(Boolean).sort()[0] || today;
+  const t = parseYmd(today);
+  let m = new Date(Math.max(parseYmd(first).getTime(), new Date(t.getFullYear() - 7, t.getMonth(), 1).getTime()));
+  m = new Date(m.getFullYear(), m.getMonth(), 1, 12);
+  const out = [];
+  while (m <= t) {
+    const s = ymd(m), last = new Date(m.getFullYear(), m.getMonth() + 1, 0, 12);
+    const e = ymd(last) < today ? ymd(last) : today;
+    const vals = rangeDates(s, e).map(def.day).filter((v) => typeof v === 'number');
+    const need = def.min > 1 ? Math.min(def.min, 3) : 1;
+    out.push({ month: s, v: vals.length >= need ? avg(vals) * (def.scale || 1) : null });
+    m = new Date(m.getFullYear(), m.getMonth() + 1, 1, 12);
+  }
+  while (out.length && out[0].v == null) out.shift();
+  return out;
+}
+
+const monthLabel = (s) => { const d = parseYmd(s); return `${MONTHS[d.getMonth()].slice(0, 3)} ${String(d.getFullYear()).slice(2)}`; };
+
+function bilanzDelta(def, cur, ref, word) {
+  if (!cur || !ref) return null;
+  const diff = round(cur.v, def.decimals) - round(ref.v, def.decimals);
+  const good = diff * def.better > 0, bad = diff * def.better < 0;
+  const txt = def.id === 'sleep' ? fmtDuration(Math.abs(diff)).replace(' h', '') + ' h' : fmtNum(Math.abs(diff), def.decimals) + (def.id === 'move' ? ' min' : def.id === 'weight' ? ' kg' : '');
+  return h('span', { class: `delta${good ? ' good' : bad ? ' bad' : ''}` }, `${diff > 0 ? '▲' : diff < 0 ? '▼' : '='} ${diff ? txt : ''} ${word}`.replace(/\s+/g, ' ').trim());
+}
+
+/** Monatsverlauf als Linie mit Jahresmarken. */
+function monthChart(months, def) {
+  const pts = months.map((x) => ({ v: x.v, label: parseYmd(x.month).getMonth() === 0 || months.length <= 12 ? (months.length <= 12 ? MONTHS[parseYmd(x.month).getMonth()].slice(0, 1) : `'${x.month.slice(2, 4)}`) : '' }));
+  return lineChart(pts, { labels: months.length <= 7, decimals: def.decimals });
+}
+
+function savingsDetail() {
+  const s = config.savings || {};
+  const rate = ((s.rates || []).slice().sort((a, b) => (a.from < b.from ? -1 : 1)).pop() || {}).perHour;
+  const today = logicalToday();
+  const ensure = () => { config.savings = Object.assign({ start: null, rates: [], extras: [] }, config.savings); return config.savings; };
+  const setStart = (v) => {
+    const c = ensure();
+    c.start = v || null;
+    if (c.rates.length && v) c.rates[0].from = v < c.rates[0].from || c.rates.length === 1 ? v : c.rates[0].from;
+    commitConfig('savings', true);
+  };
+  const setRate = (v) => {
+    const c = ensure();
+    const n = parseNum(v);
+    if (n == null || n < 0) return;
+    const from = !c.start || today <= c.start || !c.rates.length ? (c.start || today) : today;
+    c.rates = c.rates.filter((r) => r.from !== from && r.from < from);
+    c.rates.push({ from, perHour: n });
+    commitConfig('savings', true);
+  };
+  let amount = '';
+  let date = today;
+  const add = () => {
+    const n = parseNum(amount);
+    if (!n) return;
+    const c = ensure();
+    c.extras.push({ id: `x${Date.now().toString(36)}`, date, eur: n });
+    c.extras.sort((a, b) => (a.date < b.date ? -1 : 1));
+    commitConfig('savings extra', true);
+  };
+  const extras = (s.extras || []).slice().reverse();
+  return h('div', { class: 'bilanz-form' },
+    h('div', { class: 'two' },
+      h('label', { class: 'field' }, h('span', {}, 'Sparplan seit'), h('input', { type: 'date', value: s.start || '', onchange: (e) => setStart(e.target.value) })),
+      h('label', { class: 'field' }, h('span', {}, '€ pro Stunde'), h('input', { type: 'text', inputmode: 'decimal', value: rate != null ? fmtNum(rate, 2) : '', placeholder: '1,30', onchange: (e) => setRate(e.target.value) }))),
+    rate ? h('p', { class: 'hint' }, `= ${fmtNum(rate * 24, 2)} € pro Tag · ca. ${fmtEur(rate * 24 * 365 / 12)} pro Monat. Eine neue Rate gilt ab heute, frühere Tage behalten die alte.`) : null,
+    h('p', { class: 'subhead' }, 'Extra-Kauf eintragen'),
+    h('div', { class: 'two' },
+      h('label', { class: 'field' }, h('span', {}, 'Betrag (€)'), h('input', { type: 'text', inputmode: 'decimal', placeholder: 'z. B. 250', oninput: (e) => { amount = e.target.value; } })),
+      h('label', { class: 'field' }, h('span', {}, 'Datum'), h('input', { type: 'date', value: today, onchange: (e) => { date = e.target.value || today; } }))),
+    h('button', { type: 'button', class: 'btn primary', onclick: add }, 'Hinzufügen'),
+    extras.length ? h('div', { class: 'extras' }, extras.map((x) => h('div', { class: 'extra' },
+      h('span', {}, formatDateShort(x.date) + String(parseYmd(x.date).getFullYear()).slice(2)),
+      h('b', {}, fmtEur(x.eur)),
+      h('button', { type: 'button', class: 'icon-btn small', 'aria-label': 'Löschen', onclick: () => {
+        if (!confirm(`Extra-Kauf über ${fmtEur(x.eur)} löschen?`)) return;
+        config.savings.extras = config.savings.extras.filter((y) => y.id !== x.id);
+        commitConfig('savings extra', true);
+      } }, '×')))) : null,
+    h('p', { class: 'hint' }, 'Nur Euro-Beträge – deine BTC-Menge bleibt außerhalb der App.'));
+}
+
+function bilanzCard() {
+  const today = logicalToday();
+  const yesterday = addDays(today, -1);
+  const tiles = [];
+  let detail = null;
+  for (const def of bilanzDefs()) {
+    const end = def.skipToday ? yesterday : today;
+    const cur = bilanzAvg(def, end);
+    const prev = bilanzAvg(def, addDays(end, -BILANZ_WINDOW));
+    const year = bilanzAvg(def, addDays(end, -365));
+    const open = bilanzUi.open === def.id;
+    const months = open || cur ? bilanzMonths(def, end) : [];
+    tiles.push(h('button', { type: 'button', class: `bz${open ? ' on' : ''}${cur ? '' : ' empty'}`, onclick: () => { bilanzUi.open = open ? null : def.id; softRender(); } },
+      h('span', { class: 'bz-label' }, def.label),
+      h('b', { class: 'bz-val' }, cur ? def.fmt(cur.v, cur.v2) : '–'),
+      h('small', { class: 'bz-unit' }, cur ? def.unit : 'noch keine Daten'),
+      cur ? bilanzDelta(def, cur, prev, '') : null,
+      months.length > 1 ? sparkline([months.slice(-12).map((x) => x.v)]) : null));
+    if (open) {
+      const valid = months.filter((x) => x.v != null);
+      const best = valid.length ? valid.reduce((a, x) => ((x.v - a.v) * def.better > 0 ? x : a)) : null;
+      detail = h('div', { class: 'bz-detail' },
+        h('p', { class: 'small muted' }, def.info),
+        valid.length > 1 ? [h('p', { class: 'subhead' }, `Verlauf pro Monat seit ${monthLabel(months.slice(-36)[0].month)}`), monthChart(months.slice(-36), def)] : null,
+        h('div', { class: 'bz-compare' },
+          h('div', {}, h('span', {}, 'Letzte 30 Tage'), h('b', {}, cur ? def.fmt(cur.v, cur.v2) : '–')),
+          h('div', {}, h('span', {}, '30 Tage davor'), h('b', {}, prev ? def.fmt(prev.v, prev.v2) : '–')),
+          h('div', {}, h('span', {}, 'Vor einem Jahr'), h('b', {}, year ? def.fmt(year.v, year.v2) : '–'))),
+        cur && year ? h('p', { class: 'small' }, bilanzDelta(def, cur, year, 'im Vergleich zu vor einem Jahr')) : null,
+        best ? h('p', { class: 'hint' }, `Bester Monat seit ${monthLabel(months[0].month)}: ${MONTHS[parseYmd(best.month).getMonth()]} ${best.month.slice(0, 4)} (${def.fmt(best.v)})`) : null);
+    }
+  }
+  // Gespart (€): eigener Baustein, da Summe statt Durchschnitt
+  const s = config.savings;
+  const now = Date.now();
+  const total = savedAt(now);
+  const monthStart = ymd(new Date(parseYmd(today).getFullYear(), parseYmd(today).getMonth(), 1, 12));
+  const thisMonth = total - savedAt(parseYmd(monthStart).setHours(0, 0, 0, 0));
+  const openS = bilanzUi.open === 'saved';
+  let spark = null;
+  if (s && s.start) {
+    const pts = [];
+    const t = parseYmd(today);
+    for (let i = 11; i >= 0; i--) { const e = new Date(t.getFullYear(), t.getMonth() - i + 1, 0, 23, 59); pts.push(Math.min(e.getTime(), now) >= parseYmd(s.start).getTime() ? savedAt(Math.min(e.getTime(), now)) : null); }
+    spark = sparkline([pts]);
+  }
+  tiles.push(h('button', { type: 'button', class: `bz${openS ? ' on' : ''}${total ? '' : ' empty'}`, onclick: () => { bilanzUi.open = openS ? null : 'saved'; softRender(); } },
+    h('span', { class: 'bz-label' }, 'Gespart'),
+    h('b', { class: 'bz-val' }, total ? fmtEur(total) : '–'),
+    h('small', { class: 'bz-unit' }, total ? 'gesamt' : 'Sparplan eintragen'),
+    total ? h('span', { class: 'delta good' }, `+${fmtEur(thisMonth)} diesen Monat`) : null,
+    spark));
+  if (openS) detail = h('div', { class: 'bz-detail' }, savingsDetail());
+  // Detail direkt unter der Zeile der angetippten Kachel
+  const at = tiles.findIndex((x) => x.classList.contains('on'));
+  const grid = h('div', { class: 'bz-grid' });
+  tiles.forEach((tile, i) => {
+    grid.append(tile);
+    if (detail && i === Math.min(at | 1, tiles.length - 1)) grid.append(detail);
+  });
+  const hd = historyData();
+  return section('s-bilanz', 'Lebensbilanz', { text: 'letzte 30 Tage' }, [
+    grid,
+    h('p', { class: 'hint' }, `▲▼ = Veränderung zu den 30 Tagen davor, grün = in die richtige Richtung. Tippe auf eine Kachel für den Verlauf über Jahre.${hd ? ` Health-Historie seit ${formatDateShort(hd.from)}${hd.from.slice(0, 4)}.` : ''}`),
+  ]);
+}
+
 function viewWeek() {
   const kind = statsUi.kind;
   const p = periodRange(kind, statsUi.offset);
@@ -3077,6 +3364,7 @@ function viewWeek() {
 
   const pauseCount = dates.filter((d) => d <= today && (getDay(d) || {}).pause).length;
   const root = h('div', {},
+    bilanzCard(),
     h('div', { class: 'segmented period' }, Object.entries(PERIODS).map(([k, label]) => h('button', {
       type: 'button', class: kind === k ? 'on' : '', 'aria-pressed': kind === k ? 'true' : 'false', onclick: () => setKind(k),
     }, label))),
