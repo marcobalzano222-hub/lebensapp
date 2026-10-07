@@ -5,7 +5,6 @@ Der Kurzbefehl liest die Daten von **gestern und heute bis jetzt** (technisch: b
 | Wert | Zeitraum |
 |---|---|
 | Schritte | Summe des Vortags |
-| Trainingsminuten | Summe des Vortags (grüner Ring, ab Version 9) |
 | Gewicht | letzte Messung am Vortag (z. B. Withings-Waage) |
 | Schlaf | die Nacht, die am Morgen des Vortags endet, mit Tief-, REM- und Kernschlaf |
 | Ruhepuls, HRV | vom Vortag (z. B. vom Oura Ring oder der Watch) |
@@ -70,7 +69,6 @@ Schick einen Screenshot der Fehlermeldung (ohne Token). Häufige Ursachen:
   "date": "2026-10-01",
   "source": "shortcut",
   "steps": "2026-10-01T00:00:00+02:00|8423",
-  "exercise": "2026-10-01T00:00:00+02:00|42",
   "weight": "2026-10-01T07:12:00+02:00|82,1",
   "sleep": "Kern|2026-09-30T23:30:00+02:00|2026-10-01T02:00:00+02:00|Oura\nREM|…",
   "restingHr": "2026-10-01T03:12:00+02:00|52|Oura",

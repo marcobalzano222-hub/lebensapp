@@ -140,7 +140,7 @@ def github_request(method, url_parts, token, body=None):
 token = act('gettext', CustomOutputName='Token', WFTextActionText='github_pat_…')
 repo = act('gettext', CustomOutputName='Repo', WFTextActionText='marcobalzano222-hub/lebensapp-data-satoshi')
 
-comment('Lebensapp Health (Version 9): schreibt Schritte, Trainingsminuten, Gewicht, Schlaf, Ruhepuls, HRV und Blutdruck von gestern und heute bis jetzt (inkl. letzter Nacht) als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
+comment('Lebensapp Health (Version 8): schreibt Schritte, Gewicht, Schlaf, Ruhepuls, HRV und Blutdruck von gestern und heute bis jetzt (inkl. letzter Nacht) als health/JJJJ-MM-TT.json in dein privates Daten-Repo. Token und Repo stehen in den beiden Textfeldern oben.')
 
 now = act('date', CustomOutputName='Jetzt', WFDateActionMode='Current Date')
 yesterday = adjust(now, 'Gestern', 'Subtract', 1, 'days')
@@ -158,13 +158,6 @@ steps = lines_of(steps_found, 'Schritt-Samples', [
     var('Repeat Item', prop('Start Date'), datefmt(ISO)),
     var('Repeat Item', prop('Value')),
 ], 'Schritte')
-
-comment('Trainingsminuten (grüner Ring): pro Tag gruppiert, wie die Schritte.')
-exercise_found = find_health('Exercise Minutes', (day, 'Tag'), (until, 'Bis morgen'), 'Trainingsminuten-Samples', group_by_day=True)
-exercise = lines_of(exercise_found, 'Trainingsminuten-Samples', [
-    var('Repeat Item', prop('Start Date'), datefmt(ISO)),
-    var('Repeat Item', prop('Value')),
-], 'Trainingsminuten')
 
 comment('Gewicht: alle Messungen im Zeitraum. Die App nimmt die letzte Messung des Vortags.')
 weight_found = find_health('Weight', (day, 'Tag'), (until, 'Bis morgen'), 'Gewicht-Samples')
@@ -232,9 +225,8 @@ day_str = out(day, 'Tag', datefmt(DAY))
 data = act('dictionary', CustomOutputName='Health-Daten', WFItems=fields([
     ('date', [day_str]),
     ('source', ['shortcut']),
-    ('version', ['9']),
+    ('version', ['8']),
     ('steps', [out(steps, 'Schritte')]),
-    ('exercise', [out(exercise, 'Trainingsminuten')]),
     ('weight', [out(weight, 'Gewicht')]),
     ('sleep', [out(sleep, 'Schlaf')]),
     ('restingHr', [out(rhr, 'Ruhepuls')]),

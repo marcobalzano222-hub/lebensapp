@@ -549,7 +549,7 @@ function healthRaw(date) {
   const key = files.map((f) => f.sha).join('+');
   const text = (k) => [...new Set(files.flatMap((f) => (typeof f.data[k] === 'string' ? f.data[k].split(/\r?\n/) : [])).filter((x) => x.trim()))].join('\n');
   const raw = {};
-  for (const k of ['sleep', 'restingHr', 'hrv', 'bpSys', 'bpDia', 'workouts', 'weight', 'exercise']) raw[k] = text(k);
+  for (const k of ['sleep', 'restingHr', 'hrv', 'bpSys', 'bpDia', 'workouts', 'weight']) raw[k] = text(k);
   // Schritte pro Tag (gruppiert): je Tag der größte Wert – ein früherer Lauf kennt nur einen Teil des Tages
   const perDay = {};
   for (const f of files) {
@@ -613,9 +613,7 @@ function getHealth(date) {
       .filter((x) => Number.isFinite(x.t) && x.v != null && ymd(new Date(x.t)) === date)
       .sort((a, b) => a.t - b.t);
   };
-  const stepLines = onDate(raw.steps), weightLines = onDate(raw.weight), exerciseLines = onDate(raw.exercise);
-  // Trainingsminuten (Kurzbefehl v9, pro Tag summiert): spätere Läufe kennen mehr vom Tag → größter Wert
-  const exerciseMin = exerciseLines && exerciseLines.length ? Math.round(Math.max(...exerciseLines.map((x) => x.v))) : null;
+  const stepLines = onDate(raw.steps), weightLines = onDate(raw.weight);
   const weight = weightLines ? (weightLines.length ? weightLines[weightLines.length - 1].v : null) : looseNum(raw.weight);
   const dedup = raw.stepsValue ? dedupSteps(raw, date) : null;
   const steps = dedup ? dedup.steps
@@ -637,7 +635,7 @@ function getHealth(date) {
     restingHr: rhr.value,
     bp: bp ? bp.value : null,
     hrv: hrv.value,
-    exerciseMin: exerciseMin > 0 ? exerciseMin : null,
+    exerciseMin: null,
     sources: [...new Set([...(dedup ? Object.keys(dedup.perSource) : []), ...(sleepInfo ? sleepInfo.sources : []), ...rhr.sources, ...hrv.sources, ...(bp ? bp.sources : [])].filter((x) => x && x !== '?'))],
     workouts,
   };
@@ -2937,14 +2935,24 @@ function moodOn(d) {
 }
 const metricById = (id) => config.metrics.find((m) => m.id === id);
 
+/** Selbst eingetragene Trainingseinheiten eines Tages (ohne Sauna); null vor dem ersten App-Tag. */
+function sessionsOn(d, first) {
+  if (!first || d < first) return null;
+  const day = getDay(d) || {};
+  const ids = (day.training || []).map((e) => e.id).filter((id) => id !== 'sauna');
+  if ((day.strength || []).length && !ids.includes('strength')) ids.push('strength');
+  return ids.length;
+}
+
 /** Kennzahlen der Lebensbilanz. better: +1 = mehr ist besser, −1 = weniger ist besser. */
 function bilanzDefs() {
   const w = metricById('weight') || { id: 'weight', type: 'number' };
   const bp = config.metrics.find((m) => m.type === 'bloodpressure') || { id: 'bp', type: 'bloodpressure' };
+  const firstDay = cachedDates('days')[0];
   return [
-    { id: 'move', label: 'Bewegung', better: 1, scale: 7, min: 5, skipToday: true, decimals: 0,
-      day: (d) => (getHealth(d) || {}).exerciseMin ?? null, fmt: (v) => `${fmtNum(v)} min`, unit: 'pro Woche',
-      info: 'Trainingsminuten aus Apple Health (grüner Ring der Watch), hochgerechnet auf eine Woche.' },
+    { id: 'move', label: 'Training', better: 1, scale: 7, min: 5, decimals: 1,
+      day: (d) => sessionsOn(d, firstDay), fmt: (v) => `${fmtNum(v, 1)}×`, unit: 'Einheiten pro Woche',
+      info: 'Deine eingetragenen Trainingseinheiten (Kraft, Zone 2, HIT …, ohne Sauna), hochgerechnet auf eine Woche. Ein Tag mit Kraft-Sätzen zählt als Einheit.' },
     { id: 'weight', label: 'Gewicht', better: -1, min: 1, decimals: 1,
       day: (d) => metricOn(w, d) ?? null, fmt: (v) => `${fmtNum(v, 1)} kg`, unit: 'Ø 30 Tage',
       info: 'Durchschnitt aller Wiegungen der letzten 30 Tage (eigene Einträge und Waage über Health).' },
@@ -2996,7 +3004,7 @@ function bilanzDelta(def, cur, ref, word) {
   if (!cur || !ref) return null;
   const diff = round(cur.v, def.decimals) - round(ref.v, def.decimals);
   const good = diff * def.better > 0, bad = diff * def.better < 0;
-  const txt = def.id === 'sleep' ? fmtDuration(Math.abs(diff)).replace(' h', '') + ' h' : fmtNum(Math.abs(diff), def.decimals) + (def.id === 'move' ? ' min' : def.id === 'weight' ? ' kg' : '');
+  const txt = def.id === 'sleep' ? fmtDuration(Math.abs(diff)).replace(' h', '') + ' h' : fmtNum(Math.abs(diff), def.decimals) + (def.id === 'move' ? '×' : def.id === 'weight' ? ' kg' : '');
   return h('span', { class: `delta${good ? ' good' : bad ? ' bad' : ''}` }, `${diff > 0 ? '▲' : diff < 0 ? '▼' : '='} ${diff ? txt : ''} ${word}`.replace(/\s+/g, ' ').trim());
 }
 
