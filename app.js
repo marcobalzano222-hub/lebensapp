@@ -3045,7 +3045,15 @@ function savingsDetail() {
     commitConfig('savings extra', true);
   };
   const extras = (s.extras || []).slice().reverse();
+  // Summe je Kalenderjahr (Rate + Extra-Käufe)
+  const firstYear = Math.min(...[s.start, ...(s.extras || []).map((x) => x.date)].filter(Boolean).map((d) => Number(d.slice(0, 4))), parseYmd(today).getFullYear());
+  const years = [];
+  for (let y = parseYmd(today).getFullYear(); y >= firstYear; y--) years.push([y, savedAt(Math.min(Date.now(), new Date(y + 1, 0, 1).getTime())) - savedAt(new Date(y, 0, 1).getTime())]);
+  const maxYear = Math.max(1, ...years.map((x) => x[1]));
   return h('div', { class: 'bilanz-form' },
+    years.some((x) => x[1]) ? [h('p', { class: 'subhead first' }, 'Pro Jahr'),
+      years.map(([y, v]) => goalRow(String(y), fmtEur(v), v / maxYear, { reached: true })),
+      h('p', { class: 'subhead' }, 'Sparplan')] : null,
     h('div', { class: 'two' },
       h('label', { class: 'field' }, h('span', {}, 'Sparplan seit'), h('input', { type: 'date', value: s.start || '', onchange: (e) => setStart(e.target.value) })),
       h('label', { class: 'field' }, h('span', {}, '€ pro Stunde'), h('input', { type: 'text', inputmode: 'decimal', value: rate != null ? fmtNum(rate, 2) : '', placeholder: '1,30', onchange: (e) => setRate(e.target.value) }))),
@@ -3056,7 +3064,7 @@ function savingsDetail() {
       h('label', { class: 'field' }, h('span', {}, 'Datum'), h('input', { type: 'date', value: today, onchange: (e) => { date = e.target.value || today; } }))),
     h('button', { type: 'button', class: 'btn primary', onclick: add }, 'Hinzufügen'),
     extras.length ? h('div', { class: 'extras' }, extras.map((x) => h('div', { class: 'extra' },
-      h('span', {}, formatDateShort(x.date) + String(parseYmd(x.date).getFullYear()).slice(2)),
+      h('span', {}, formatDateShort(x.date) + String(parseYmd(x.date).getFullYear()).slice(2) + (x.note ? ` · ${x.note}` : '')),
       h('b', {}, fmtEur(x.eur)),
       h('button', { type: 'button', class: 'icon-btn small', 'aria-label': 'Löschen', onclick: () => {
         if (!confirm(`Extra-Kauf über ${fmtEur(x.eur)} löschen?`)) return;
@@ -3102,22 +3110,15 @@ function bilanzCard() {
   const s = config.savings;
   const now = Date.now();
   const total = savedAt(now);
-  const monthStart = ymd(new Date(parseYmd(today).getFullYear(), parseYmd(today).getMonth(), 1, 12));
-  const thisMonth = total - savedAt(parseYmd(monthStart).setHours(0, 0, 0, 0));
+  const yearNow = parseYmd(today).getFullYear();
+  const thisYear = total - savedAt(new Date(yearNow, 0, 1).getTime());
   const openS = bilanzUi.open === 'saved';
-  let spark = null;
-  if (s && s.start) {
-    const pts = [];
-    const t = parseYmd(today);
-    for (let i = 11; i >= 0; i--) { const e = new Date(t.getFullYear(), t.getMonth() - i + 1, 0, 23, 59); pts.push(Math.min(e.getTime(), now) >= parseYmd(s.start).getTime() ? savedAt(Math.min(e.getTime(), now)) : null); }
-    spark = sparkline([pts]);
-  }
   tiles.push(h('button', { type: 'button', class: `bz${openS ? ' on' : ''}${total ? '' : ' empty'}`, onclick: () => { bilanzUi.open = openS ? null : 'saved'; softRender(); } },
-    h('span', { class: 'bz-label' }, 'Gespart'),
+    h('span', { class: 'bz-label' }, 'Gespart ', h('span', { class: 'btc', 'aria-label': 'Bitcoin' }, '₿')),
     h('b', { class: 'bz-val' }, total ? fmtEur(total) : '–'),
     h('small', { class: 'bz-unit' }, total ? 'gesamt' : 'Sparplan eintragen'),
-    total ? h('span', { class: 'delta good' }, `+${fmtEur(thisMonth)} diesen Monat`) : null,
-    spark));
+    total ? h('span', { class: 'delta good' }, `+${fmtEur(thisYear)} dieses Jahr`) : null,
+    s && s.rates && s.rates.length ? h('small', { class: 'bz-unit' }, `+${fmtNum(s.rates[s.rates.length - 1].perHour * 24, 2)} € pro Tag`) : null));
   if (openS) detail = h('div', { class: 'bz-detail' }, savingsDetail());
   // Detail direkt unter der Zeile der angetippten Kachel
   const at = tiles.findIndex((x) => x.classList.contains('on'));
