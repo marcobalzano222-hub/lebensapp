@@ -4042,12 +4042,28 @@ function init() {
   // Lokal (Entwicklung) ohne Service Worker, damit Änderungen sofort sichtbar sind; mit ?sw=1 erzwingen.
   const dev = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && !/[?&]sw=1/.test(location.search);
   if ('serviceWorker' in navigator && location.protocol !== 'file:' && !dev) {
-    navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('Service Worker:', e.message));
+    let hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
+      .then((reg) => { swReg = reg; })
+      .catch((e) => console.warn('Service Worker:', e.message));
+    // Neue Version übernommen → einmal neu laden, damit der neue Code sofort läuft
+    // (nicht mitten in einer Eingabe; Daten liegen ohnehin lokal gespeichert).
+    let reloading = false;
+    const reload = () => { if (!reloading) { reloading = true; location.reload(); } };
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController) { hadController = true; return; }   // allererste Installation: nichts neu zu laden
+      const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+      if (!typing) reload();
+      else document.addEventListener('visibilitychange', () => { if (document.hidden) reload(); }, { once: true });
+    });
   }
 }
 
+let swReg = null;
+
 /** Nach Rückkehr in die App: automatischen Check-in und „Heute“ neu bestimmen. */
 function onResume(reset) {
+  if (swReg) swReg.update().catch(() => {});   // nach Rückkehr in die App nach neuer Version schauen
   if (reset) Object.assign(todayUi, { date: null, pauseOpen: false, trainOpen: null, strengthDay: null, lastExercise: null });
   softRender();
 }

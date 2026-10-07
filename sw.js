@@ -1,6 +1,6 @@
 // Service Worker: App-Shell Cache-First, GitHub-API Network-Only.
 // Bei jedem Release CACHE_VERSION erhöhen, damit Updates ankommen.
-const CACHE_VERSION = 'lebensapp-v28';
+const CACHE_VERSION = 'lebensapp-v29';
 
 const SHELL = [
   './',
@@ -15,7 +15,8 @@ const SHELL = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_VERSION).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting())
+    // cache: 'reload' umgeht den HTTP-Cache (GitHub Pages: 10 min), sonst könnte eine neue Version alte Dateien einlagern
+    caches.open(CACHE_VERSION).then((cache) => cache.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting())
   );
 });
 
