@@ -2934,6 +2934,8 @@ function moodOn(d) {
   return vals.length ? avg(vals) : null;
 }
 const metricById = (id) => config.metrics.find((m) => m.id === id);
+/** Blutdruck nur, wenn plausibel (Tippfehler wie 110/110 fallen raus). */
+const bpOk = (v) => (v && v.sys >= 70 && v.sys <= 250 && v.dia >= 35 && v.dia < v.sys ? v : null);
 
 /** Selbst eingetragene Trainingseinheiten eines Tages (ohne Sauna); null vor dem ersten App-Tag. */
 function sessionsOn(d, first) {
@@ -2953,11 +2955,11 @@ function bilanzDefs() {
     { id: 'move', label: 'Training', better: 1, scale: 7, min: 5, decimals: 1,
       day: (d) => sessionsOn(d, firstDay), fmt: (v) => `${fmtNum(v, 1)}×`, unit: 'Einheiten pro Woche',
       info: 'Deine eingetragenen Trainingseinheiten (Kraft, Zone 2, HIT …, ohne Sauna), hochgerechnet auf eine Woche. Ein Tag mit Kraft-Sätzen zählt als Einheit.' },
-    { id: 'weight', label: 'Gewicht', better: -1, min: 1, decimals: 1,
+    { id: 'weight', label: 'Gewicht', better: -1, min: 1, decimals: 1, yearLow: true,
       day: (d) => metricOn(w, d) ?? null, fmt: (v) => `${fmtNum(v, 1)} kg`, unit: 'Ø 30 Tage',
       info: 'Durchschnitt aller Wiegungen der letzten 30 Tage (eigene Einträge und Waage über Health).' },
-    { id: 'bp', label: 'Blutdruck', better: -1, min: 1, decimals: 0,
-      day: (d) => (metricOn(bp, d) || {}).sys ?? null, day2: (d) => (metricOn(bp, d) || {}).dia ?? null,
+    { id: 'bp', label: 'Blutdruck', better: -1, min: 1, decimals: 0, yearLow: true,
+      day: (d) => (bpOk(metricOn(bp, d)) || {}).sys ?? null, day2: (d) => (bpOk(metricOn(bp, d)) || {}).dia ?? null,
       fmt: (v, v2) => `${fmtNum(v)}/${v2 != null ? fmtNum(v2) : '–'}`, unit: 'Ø 30 Tage',
       info: 'Durchschnitt aller Messungen der letzten 30 Tage. Verglichen wird der obere Wert (systolisch).' },
     { id: 'sleep', label: 'Schlaf', better: 1, min: 5, decimals: 0,
@@ -3074,6 +3076,16 @@ function savingsDetail() {
     h('p', { class: 'hint' }, 'Nur Euro-Beträge – deine BTC-Menge bleibt außerhalb der App.'));
 }
 
+/** Niedrigster Tageswert seit 1.1. (Blutdruck: Tag mit dem niedrigsten oberen Wert). */
+function yearLow(def, today) {
+  let low = null;
+  for (const d of rangeDates(`${today.slice(0, 4)}-01-01`, today)) {
+    const v = def.day(d);
+    if (typeof v === 'number' && (!low || v < low.v)) low = { v, v2: def.day2 ? def.day2(d) : null, d };
+  }
+  return low;
+}
+
 function bilanzCard() {
   const today = logicalToday();
   const yesterday = addDays(today, -1);
@@ -3085,18 +3097,20 @@ function bilanzCard() {
     const prev = bilanzAvg(def, addDays(end, -BILANZ_WINDOW));
     const year = bilanzAvg(def, addDays(end, -365));
     const open = bilanzUi.open === def.id;
-    const months = open || cur ? bilanzMonths(def, end) : [];
-    tiles.push(h('button', { type: 'button', class: `bz${open ? ' on' : ''}${cur ? '' : ' empty'}`, onclick: () => { bilanzUi.open = open ? null : def.id; softRender(); } },
+    const months = open ? bilanzMonths(def, end) : [];
+    const low = def.yearLow ? yearLow(def, today) : null;
+    const shown = def.yearLow ? low : cur;
+    tiles.push(h('button', { type: 'button', class: `bz${open ? ' on' : ''}${shown ? '' : ' empty'}`, onclick: () => { bilanzUi.open = open ? null : def.id; softRender(); } },
       h('span', { class: 'bz-label' }, def.label),
-      h('b', { class: 'bz-val' }, cur ? def.fmt(cur.v, cur.v2) : '–'),
-      h('small', { class: 'bz-unit' }, cur ? def.unit : 'noch keine Daten'),
-      cur ? bilanzDelta(def, cur, prev, '') : null,
-      months.length > 1 ? sparkline([months.slice(-12).map((x) => x.v)]) : null));
+      h('b', { class: 'bz-val' }, shown ? def.fmt(shown.v, shown.v2) : '–'),
+      h('small', { class: 'bz-unit' }, !shown ? 'keine Daten' : def.yearLow ? `Tiefstwert ${today.slice(0, 4)}` : def.unit),
+      cur && !def.yearLow ? bilanzDelta(def, cur, prev, '') : null));
     if (open) {
       const valid = months.filter((x) => x.v != null);
       const best = valid.length ? valid.reduce((a, x) => ((x.v - a.v) * def.better > 0 ? x : a)) : null;
       detail = h('div', { class: 'bz-detail' },
         h('p', { class: 'small muted' }, def.info),
+        low ? h('p', { class: 'small' }, `Tiefstwert ${today.slice(0, 4)}: `, h('b', {}, def.fmt(low.v, low.v2)), ` am ${formatDateShort(low.d)}`) : null,
         valid.length > 1 ? [h('p', { class: 'subhead' }, `Verlauf pro Monat seit ${monthLabel(months.slice(-36)[0].month)}`), monthChart(months.slice(-36), def)] : null,
         h('div', { class: 'bz-compare' },
           h('div', {}, h('span', {}, 'Letzte 30 Tage'), h('b', {}, cur ? def.fmt(cur.v, cur.v2) : '–')),
@@ -3115,22 +3129,20 @@ function bilanzCard() {
   const openS = bilanzUi.open === 'saved';
   tiles.push(h('button', { type: 'button', class: `bz${openS ? ' on' : ''}${total ? '' : ' empty'}`, onclick: () => { bilanzUi.open = openS ? null : 'saved'; softRender(); } },
     h('span', { class: 'bz-label' }, 'Gespart ', h('span', { class: 'btc', 'aria-label': 'Bitcoin' }, '₿')),
-    h('b', { class: 'bz-val' }, total ? fmtEur(total) : '–'),
-    h('small', { class: 'bz-unit' }, total ? 'gesamt' : 'Sparplan eintragen'),
-    total ? h('span', { class: 'delta good' }, `+${fmtEur(thisYear)} dieses Jahr`) : null,
-    s && s.rates && s.rates.length ? h('small', { class: 'bz-unit' }, `+${fmtNum(s.rates[s.rates.length - 1].perHour * 24, 2)} € pro Tag`) : null));
-  if (openS) detail = h('div', { class: 'bz-detail' }, savingsDetail());
+    h('b', { class: 'bz-val' }, total ? fmtEur(thisYear) : '–'),
+    h('small', { class: 'bz-unit' }, total ? `dieses Jahr` : 'Sparplan eintragen')));
+  if (openS) detail = h('div', { class: 'bz-detail' }, h('p', { class: 'small first' }, 'Insgesamt gespart: ', h('b', {}, fmtEur(total))), savingsDetail());
   // Detail direkt unter der Zeile der angetippten Kachel
   const at = tiles.findIndex((x) => x.classList.contains('on'));
   const grid = h('div', { class: 'bz-grid' });
   tiles.forEach((tile, i) => {
     grid.append(tile);
-    if (detail && i === Math.min(at | 1, tiles.length - 1)) grid.append(detail);
+    if (detail && i === Math.min(Math.floor(at / 3) * 3 + 2, tiles.length - 1)) grid.append(detail);
   });
   const hd = historyData();
-  return section('s-bilanz', 'Lebensbilanz', { text: 'letzte 30 Tage' }, [
+  return section('s-bilanz', 'Lebensbilanz', null, [
     grid,
-    h('p', { class: 'hint' }, `▲▼ = Veränderung zu den 30 Tagen davor, grün = in die richtige Richtung. Tippe auf eine Kachel für den Verlauf über Jahre.${hd ? ` Health-Historie seit ${formatDateShort(hd.from)}${hd.from.slice(0, 4)}.` : ''}`),
+    h('p', { class: 'hint' }, `▲▼ = Veränderung zu den 30 Tagen davor. Tippe auf eine Kachel für Verlauf und Vergleiche.${hd ? ` Health-Historie seit ${formatDateShort(hd.from)}${hd.from.slice(0, 4)}.` : ''}`),
   ]);
 }
 
