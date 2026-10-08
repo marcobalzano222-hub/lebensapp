@@ -43,7 +43,7 @@ Mehrere Personen nutzen dieselbe App-URL – jede mit eigenem Repo und eigenem T
 
 ### 4. Optional: Apple Health verbinden
 
-Ein iOS-Kurzbefehl kann täglich Schritte, Schlaf, Gewicht und Workouts aus Apple Health in dein Daten-Repo schreiben: **[Anleitung: HEALTH-SHORTCUT.md](HEALTH-SHORTCUT.md)**.
+Ein iOS-Kurzbefehl kann täglich Schritte, Schlaf, Gewicht, Blutdruck und Herzwerte aus Apple Health in dein Daten-Repo schreiben: **[Anleitung: HEALTH-SHORTCUT.md](HEALTH-SHORTCUT.md)**.
 
 ---
 
@@ -52,7 +52,7 @@ Ein iOS-Kurzbefehl kann täglich Schritte, Schlaf, Gewicht und Workouts aus Appl
 | Reiter | Inhalt |
 |---|---|
 | **Heute** | Der ganze Tag auf einer Seite: Messwerte, Gewohnheiten, Ernährung, Training, Befinden, Negatives. Abschnitte lassen sich einklappen; erledigte werden grün. Wischen nach rechts = Vortag, nach links = zurück Richtung heute; Tap auf das Datum = heute. |
-| **Auswertung** | Oben die **Lebensbilanz**: Training (eingetragene Einheiten pro Woche), Gewicht, Blutdruck, Schlaf, Befinden und Gespart (€) – gleitend über 30 Tage, mit Vergleich zum Vormonat und zu vor einem Jahr; Tap = Verlauf pro Monat über Jahre. Darunter Woche / Monat / 3 Monate: Level (Körper, Treibstoff, Geist), Soll/Ist (Training, Schritte, Schlaf, Ernährung, Negative mit Wochenlimit, Gewohnheiten), „Was hilft mir?“ (Vergleiche, z. B. Tiefschlaf nach Meditation), Schlafphasen und Schlafrhythmus, Ruhepuls und HRV, Gewicht und Blutdruck mit 7-Tage-Trend, Durchschnitte, Gewohnheiten-Raster. |
+| **Auswertung** | Oben die **Lebensbilanz**: Training (eingetragene Einheiten pro Woche), Gewicht, Blutdruck, Schlaf, Befinden und Gespart (€) – gleitend über 30 Tage, mit Vergleich zum Vormonat und zu vor einem Jahr; Tap = Verlauf pro Monat über Jahre. Darunter Woche / Monat / 3 Monate: Wochen-Score (Körper, Treibstoff, Geist), Soll/Ist (Training, Schritte, Schlaf, Ernährung, Negative mit Wochenlimit, Gewohnheiten), „Was hilft mir?“ (Vergleiche, z. B. Tiefschlaf nach Meditation), Schlafphasen und Schlafrhythmus, Ruhepuls und HRV, Gewicht und Blutdruck mit 7-Tage-Trend, Durchschnitte, Gewohnheiten-Raster. |
 | **Erkenntnisse** | Kurze Notizen mit Tags (Philosophie, Ökonomie, Gesundheit, Training, Buch/Empfehlung, Idee) und optionaler Quelle. Archiv mit Suche und Tag-Filter, Bearbeiten/Löschen, „Für Claude kopieren“. Im Reiter Heute erscheint täglich eine ältere Erkenntnis. |
 | **Setup** | Aufklappbare Gruppen: Ziele, Gewohnheiten, Messwerte, Training, Ernährung, Negatives, Erkenntnisse, Apple Health, Sync & Daten (Status, „Jetzt synchronisieren“, Export JSON/CSV, „Für Claude kopieren“, Token entfernen), Allgemein. |
 
@@ -65,6 +65,7 @@ Ein iOS-Kurzbefehl kann täglich Schritte, Schlaf, Gewicht und Workouts aus Appl
 - **Tags** (z. B. Koffeinverzicht, Durchfall): pro Tag antippen, neue mit „+ Neu“. „Was hilft mir?“ vergleicht Tage mit und ohne Tag.
 - **Notiz zum Befinden:** unter Körper und Geist „+ Notiz“ für freien Text, nur wenn es etwas gibt.
 - **Sparplan** (Lebensbilanz → Gespart): Startdatum und € pro Stunde eintragen, die App rechnet laufend weiter; Extra-Käufe mit Betrag und Datum. Nur Euro, keine BTC-Menge.
+- **Training** zählt nur, was du selbst einträgst – Workouts aus Apple Health werden nicht übernommen.
 - **Pause** (z. B. krank, Reise): Der Tag zählt nicht in Durchschnitte und Wochenziele. Eingaben bleiben möglich.
 - **Sync-Punkt oben rechts:** grün = synchron, gelb = ausstehend/offline, rot = Fehler (Details unter Setup → Sync & Daten; ein Tap auf den Punkt führt direkt dorthin).
 

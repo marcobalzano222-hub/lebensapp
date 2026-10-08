@@ -648,38 +648,14 @@ function getHealth(date) {
   return parsed;
 }
 
-/** Standard-Zuordnung der Apple-Watch-Workout-Typen (deutsch und englisch). */
-const WORKOUT_RULES = [
-  ['strength', /kraft|strength/i],
-  ['hit', /hiit|intervall|interval/i],
-  ['zone2', /geh|walk|lauf|run|rad|cycl|bike|wander|hik|ruder|row|ellip|crosstrain|schwimm|swim|stepper|treppe|stair/i],
-];
-
-/** Trainings-ID für einen Workout-Typ, 'ignore' oder null (nicht zugeordnet). */
-function mapWorkout(type) {
-  const map = (config.health && config.health.workoutMap) || {};
-  if (map[type]) return map[type] === 'ignore' ? 'ignore' : (config.training.some((t) => t.id === map[type]) ? map[type] : null);
-  return autoMapWorkout(type);
-}
-function autoMapWorkout(type) {
-  for (const [id, re] of WORKOUT_RULES) if (re.test(type) && config.training.some((t) => t.id === id && isActive(t))) return id;
-  return null;
-}
-
 /**
- * Training eines Tages für die Auswertung. Pro Trainingsart gilt: Gibt es Health-Workouts
- * dieser Art, zählen nur diese; sonst die manuellen Einträge (z. B. Sauna, oder heute,
- * solange der Kurzbefehl noch nicht gelaufen ist).
+ * Training eines Tages: nur, was du selbst in der App einträgst (Apple-Health-Workouts zählen bewusst nicht).
+ * Protokollierte Kraft-Sätze zählen als eine Einheit, falls Kraft nicht schon eingetragen ist.
  */
 function trainingFor(date) {
-  const manual = ((getDay(date) || {}).training || []).map((e) => ({ ...e, source: 'manual' }));
-  const hl = getHealth(date);
-  const fromHealth = hl ? hl.workouts.map((w) => ({ id: mapWorkout(w.type), min: w.min || undefined, type: w.type, source: 'health' }))
-    .filter((w) => w.id && w.id !== 'ignore') : [];
-  const covered = new Set(fromHealth.map((w) => w.id));
-  const out = [...fromHealth, ...manual.filter((e) => !covered.has(e.id))];
-  // Protokollierte Kraft-Sätze zählen als eine Einheit, falls nicht schon erfasst
-  if (((getDay(date) || {}).strength || []).length && config.training.some((t) => t.id === 'strength') && !out.some((e) => e.id === 'strength')) {
+  const day = getDay(date) || {};
+  const out = (day.training || []).map((e) => ({ ...e, source: 'manual' }));
+  if ((day.strength || []).length && config.training.some((t) => t.id === 'strength') && !out.some((e) => e.id === 'strength')) {
     out.push({ id: 'strength', source: 'sets' });
   }
   return out;
@@ -1294,20 +1270,6 @@ function viewSetup() {
     healthCache.clear();
     commitConfig('health', true);
   };
-  const seenTypes = [...new Set(healthDates.flatMap((d) => (getHealth(d) || { workouts: [] }).workouts.map((w) => w.type)))].sort();
-  const mapRows = seenTypes.map((type) => {
-    const auto = autoMapWorkout(type);
-    const autoName = auto ? (c.training.find((t) => t.id === auto) || {}).name : 'nicht gezählt';
-    const opts = { '': `Automatisch (${autoName})` };
-    for (const t of c.training.filter(isActive)) opts[t.id] = t.name;
-    opts.ignore = 'Ignorieren';
-    return h('div', { class: 'row' },
-      h('div', { class: 'row-main' }, h('span', {}, type)),
-      h('div', { class: 'row-opts' }, selectEl(opts, c.health.workoutMap[type] || '', (v) => {
-        if (v) c.health.workoutMap[type] = v; else delete c.health.workoutMap[type];
-        commitConfig('health');
-      })));
-  });
 
   return h('div', {},
     h('h1', {}, 'Setup'),
@@ -1435,8 +1397,8 @@ function viewSetup() {
           h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nach oben', disabled: i === 0, onclick: () => moveSource(i, -1) }, '↑'),
           h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Nach unten', disabled: i === stepSources.length - 1, onclick: () => moveSource(i, 1) }, '↓'))))),
       ] : null,
-      seenTypes.length ? [h('p', { class: 'hint' }, 'Workout-Typen zuordnen (Health-Workouts ersetzen manuelle Einträge derselben Art):'),
-        h('div', { class: 'rows' }, mapRows)] : null,    ]),
+      h('p', { class: 'hint' }, 'Training zählt nur, was du selbst in der App einträgst – Workouts aus Apple Health werden nicht übernommen.'),
+    ]),
 
     setupGroup('sync', 'Sync & Daten', syncState() === 'ok' ? 'synchron' : syncState() === 'error' ? 'Fehler' : 'ausstehend', viewSync()),
 
@@ -1966,8 +1928,6 @@ function trainingBlock(date, day) {
   };
   if (todayUi.trainOpen == null && todayUi.trainAuto !== date && (day.strength || []).length) { todayUi.trainOpen = 'strength'; todayUi.trainAuto = date; }
   const effective = trainingFor(date);
-  const fromHealth = effective.filter((e) => e.source === 'health');
-  const covered = new Set(fromHealth.map((e) => e.id));
   const setCount = (day.strength || []).reduce((a, e) => a + e.sets.length, 0);
   const summary = (t) => {
     if (t.id === 'strength' && setCount) return `${setCount} Sätze`;
@@ -1988,14 +1948,9 @@ function trainingBlock(date, day) {
     open && open.id !== 'strength' ? h('div', { class: 'presets' },
       (open.presetsMin || []).map((min) => h('button', { type: 'button', class: 'btn', onclick: () => add({ id: open.id, min }) }, `${min} min`)),
       open.type !== 'minutes' ? h('button', { type: 'button', class: 'btn', onclick: () => add({ id: open.id }) }, 'ohne Zeit') : null) : null,
-    fromHealth.length || entries.length ? h('div', { class: 'chips' }, fromHealth.map((e) => {
+    entries.length ? h('div', { class: 'chips' }, entries.map((e, i) => {
       const t = config.training.find((x) => x.id === e.id);
-      return h('span', { class: 'chip health', title: `Apple Health: ${e.type}` },
-        h('span', {}, `♥ ${t ? t.name : e.id}${e.min ? ` ${e.min} min` : ''}`));
-    }), entries.map((e, i) => {
-      const t = config.training.find((x) => x.id === e.id);
-      const replaced = covered.has(e.id);
-      return h('span', { class: `chip${replaced ? ' replaced' : ''}`, title: replaced ? 'Durch Apple Health ersetzt – zählt nicht' : null },
+      return h('span', { class: 'chip' },
         h('span', {}, `${t ? t.name : e.id}${e.min ? ` ${e.min} min` : ''}`),
         h('button', {
           type: 'button', 'aria-label': 'Entfernen',
@@ -2673,24 +2628,6 @@ function weekScore(dates) {
   return { score: vals.length ? Math.round(avg(vals)) : 0, attrs, items };
 }
 
-/** Level aus allen abgeschlossenen Wochen: Level L braucht 50·L·(L−1) Punkte (100, 300, 600, …). */
-function levelInfo() {
-  const dates = cachedDates('days');
-  if (!dates.length) return { level: 1, xp: 0, next: 100, prev: 0, weeks: 0 };
-  const thisWeek = mondayOf(logicalToday());
-  let xp = 0, weeks = 0;
-  for (let w = mondayOf(dates[0]); w < thisWeek; w = addDays(w, 7)) {
-    const s = weekScore(weekDates(w));
-    if (s) { xp += s.score; weeks++; }
-  }
-  let level = 1;
-  while (50 * (level + 1) * level <= xp) level++;
-  return { level, xp, prev: 50 * level * (level - 1), next: 50 * (level + 1) * level, weeks };
-}
-
-/** Titel je Level – damit die Zahl etwas bedeutet. */
-const LEVEL_TITLES = ['Einsteiger', 'Dranbleiber', 'Gewohnheitstier', 'Routinier', 'Durchzieher', 'Profi', 'Meister', 'Vorbild', 'Legende'];
-const levelTitle = (l) => LEVEL_TITLES[Math.min(l, LEVEL_TITLES.length) - 1];
 const ATTR_HINTS = { koerper: 'Training, Sätze, Bewegung', treibstoff: 'Ernährung, Supplements, Süßes', geist: 'Meditation, Lesen, Handy, Stress' };
 
 // ---------- Auswertung: Zeitraum ----------
@@ -3142,7 +3079,6 @@ function bilanzCard() {
   const hd = historyData();
   return section('s-bilanz', 'Lebensbilanz', null, [
     grid,
-    h('p', { class: 'hint' }, `▲▼ = Veränderung zu den 30 Tagen davor. Tippe auf eine Kachel für Verlauf und Vergleiche.${hd ? ` Health-Historie seit ${formatDateShort(hd.from)}${hd.from.slice(0, 4)}.` : ''}`),
   ]);
 }
 
@@ -3161,7 +3097,6 @@ function viewWeek() {
   const periodWord = { week: 'Woche', month: 'Monat', quarter: 'Zeitraum' }[kind];
 
   // Level und Score
-  const lvl = levelInfo();
   const weeksIn = [];
   for (let w = mondayOf(p.start); w <= p.end; w = addDays(w, 7)) weeksIn.push(weekDates(w));
   const scores = weeksIn.map(weekScore).filter(Boolean);
@@ -3173,7 +3108,6 @@ function viewWeek() {
   // Verlauf: Scores der letzten 8 Wochen (bis zur angezeigten)
   const recentWeeks = Array.from({ length: 8 }, (_, i) => addDays(mondayOf(p.end < today ? p.end : today), -7 * (7 - i)));
   const recent = recentWeeks.map((w) => ({ w, s: weekScore(weekDates(w)) }));
-  const missing = lvl.next - lvl.prev - (lvl.xp - lvl.prev);
   const openAttr = statsUi.attrOpen;
   const levelCard = h('div', { class: 'level-card' },
     h('div', { class: 'score-head' },
@@ -3195,14 +3129,7 @@ function viewWeek() {
     openAttr && ws && ws.items[openAttr] ? h('div', { class: 'attr-detail' },
       h('p', { class: 'small muted' }, `${ATTRS[openAttr]} setzt sich zusammen aus (schwächstes zuerst):`),
       ws.items[openAttr].length ? ws.items[openAttr].slice().sort((a, b) => a.pct - b.pct).map((it) => goalRow(it.label, it.text, it.pct / 100))
-        : h('p', { class: 'hint' }, 'Dafür sind noch keine Ziele gesetzt.')) : h('p', { class: 'hint tap-hint' }, 'Tippe auf Körper, Treibstoff oder Geist, um zu sehen, was zählt.'),
-    h('div', { class: 'level-row' },
-      h('div', { class: 'level-badge' }, h('b', {}, lvl.level), h('span', {}, 'Level')),
-      h('div', { class: 'level-info' },
-        h('b', {}, levelTitle(lvl.level)),
-        h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(((lvl.xp - lvl.prev) / (lvl.next - lvl.prev)) * 100)}%` })),
-        h('small', {}, `Noch ${fmtNum(missing)} Punkte bis Level ${lvl.level + 1} (${levelTitle(lvl.level + 1)}) – etwa ${Math.max(1, Math.ceil(missing / 75))} gute Woche${Math.ceil(missing / 75) > 1 ? 'n' : ''}.`))),
-    h('p', { class: 'hint' }, 'Jede abgeschlossene Woche bringt so viele Punkte wie ihr Score (max. 100). Pause-Tage zählen nicht, nichts geht verloren.'));
+        : h('p', { class: 'hint' }, 'Dafür sind noch keine Ziele gesetzt.')) : null);
 
   // Soll / Ist
   const counted = countedDates(dates).length;
@@ -3321,7 +3248,10 @@ function viewWeek() {
   const sleepSum = [['Gesamt', avgOf('sleepMin')], ['Tief', avgOf('deepMin')], ['REM', avgOf('remMin')]]
     .filter(([, v]) => v != null).map(([l, v]) => `${l} Ø ${fmtDuration(v)}`).join(' · ');
   const hl = (k) => (d) => (getHealth(d) || {})[k] ?? null;
-  const rhr = avgOf('restingHr'), hrv = avgOf('hrv');
+  // Herzwerte kommen nur von der Watch (Oura teilt sie nicht mit Health) – erst ab 3 Tagen mit Werten zeigen
+  const heartDays = (k) => countedDates(dates).filter((d) => (getHealth(d) || {})[k] != null).length;
+  const rhrN = heartDays('restingHr'), hrvN = heartDays('hrv');
+  const rhr = rhrN >= 3 ? avgOf('restingHr') : null, hrv = hrvN >= 3 ? avgOf('hrv') : null;
   const hasHeart = rhr != null || hrv != null;
 
   // Gewicht & Blutdruck: mindestens 4 Wochen für einen sinnvollen Trend
@@ -3435,8 +3365,9 @@ function viewWeek() {
       rhythm ? h('p', { class: 'hint' }, 'Je kleiner die Schwankung (±), desto regelmäßiger dein Rhythmus.') : null,
     ]) : null,
     hasHeart ? section('s-heart', 'Herz', null, [
-      rhr != null ? [h('p', { class: 'subhead first' }, `Ruhepuls (bpm) · Ø ${fmtNum(rhr)}`), lineChart(series(dates, hl('restingHr')))] : null,
-      hrv != null ? [h('p', { class: 'subhead' }, `HRV (ms) · Ø ${fmtNum(hrv)}`), lineChart(series(dates, hl('hrv')))] : null,
+      rhr != null ? [h('p', { class: 'subhead first' }, `Ruhepuls (bpm) · Ø ${fmtNum(rhr)} · ${rhrN} Tage`), lineChart(series(dates, hl('restingHr')))] : null,
+      hrv != null ? [h('p', { class: 'subhead' }, `HRV (ms) · Ø ${fmtNum(hrv)} · ${hrvN} Tage`), lineChart(series(dates, hl('hrv')))] : null,
+      h('p', { class: 'hint' }, 'Nur Tage, an denen die Apple Watch gemessen hat – der Oura-Ring gibt Ruhepuls und HRV nicht an Apple Health weiter. HRV der Watch sind Stichproben über den Tag und schwanken stark.'),
     ]) : null,
     hasW || hasBp ? section('s-trend', 'Gewicht & Blutdruck', null, [
       hasW ? [h('p', { class: 'subhead first' }, `Gewicht · 7-Tage-Schnitt ${weightNow != null ? `${fmtNum(weightNow, 1)} kg` : '–'}`),
@@ -3783,10 +3714,6 @@ function exportCsv() {
     if (hl.hrv != null) add('metric', 'hrv_ms', hl.hrv);
     if (hl.deepMin != null) add('metric', 'deep_min', hl.deepMin);
     if (hl.remMin != null) add('metric', 'rem_min', hl.remMin);
-    for (const w of hl.workouts) {
-      const id = mapWorkout(w.type);
-      add('training', id && id !== 'ignore' ? id : `unmapped:${w.type}`, w.min || '');
-    }
   }
   rows.splice(1, rows.length - 1, ...rows.slice(1).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)));
   return rows.map((r) => r.map(esc).join(',')).join('\n') + '\n';
